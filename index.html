@@ -1288,12 +1288,13 @@ $('lbList').addEventListener('click', (e) => { const id = e.target.dataset && e.
 $('lbNameSave').addEventListener('click', async () => {
   const n = $('lbName').value.trim(), msg = $('lbNameMsg');
   if (!validName(n)) { msg.textContent = '2-16 letters/numbers'; return; }
-  lsSet('bhop_brick_name', n); msg.textContent = 'Saving…';
+  msg.textContent = 'Saving…';
   try {
     const res = await fetch(apiUrl('name'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: playerToken(), name: n }) });
     const data = await res.json().catch(() => ({}));
-    msg.textContent = res.ok ? 'Saved' : (data.error || 'Could not save');
-  } catch { msg.textContent = 'Saved locally'; }
+    if (!res.ok) { msg.textContent = data.error || 'Could not save'; return; }
+    lsSet('bhop_brick_name', data.name); msg.textContent = 'Saved';
+  } catch { msg.textContent = 'Could not connect. Your name has not changed.'; return; }
   if (lbState.pending) { const { saved, sync } = lbState.pending; await submitToLeaderboard(saved, sync); }
   loadLeaderboard();
 });
@@ -1566,18 +1567,41 @@ function buildKarambit() {
 const HANDLE_Y = 1.5;                                        // the karambit's handle axis sits this far above the ring center
 const WRIST = new THREE.Vector3(5.5, HANDLE_Y + 2.2, 0.8);   // wrist joint in knife space (under the fist): animations bend around it
 // knuckles sit on the side the blade curls toward (CS2 grip: knuckles up, blade curling up past the pinky)
-function buildHand(holdsKnife = true) {
-  const g = new THREE.Group(), inner = new THREE.Group();
-  inner.position.y = 2 * HANDLE_Y; inner.scale.y = -1; // mirror across the handle axis
-  g.add(inner);
-  const add = (geo, mat, x, y, z, rx = 0, ry = 0, rz = 0) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.rotation.set(rx, ry, rz); inner.add(m); return m; };
-  const finger = (r) => new THREE.TorusGeometry(r, 0.58, 10, 18, Math.PI * 1.45);
-  if (holdsKnife) add(new THREE.CapsuleGeometry(0.55, 2.2, 4, 10), VM_MAT.glove, 0, 2 * HANDLE_Y + 0.1, 0, Math.PI / 2, 0, 0); // index finger through the ring
-  (holdsKnife ? [3.4, 5.0, 6.6] : [1.8, 3.4, 5.0, 6.6]).forEach((x, i, a) => add(finger(1.8 - (i - a.length + 3) * 0.05), VM_MAT.glove, x, HANDLE_Y, 0, 0, Math.PI / 2, Math.PI * 0.8)); // curled fingers
-  add(new THREE.SphereGeometry(1, 20, 14), VM_MAT.glove, 4.4, HANDLE_Y + 0.4, -1.6).scale.set(3.7, 1.9, 1.35); // palm
-  add(new THREE.CapsuleGeometry(0.75, 5.2, 4, 10), VM_MAT.glove, 4.3, HANDLE_Y + 1.8, -0.9, 0, 0, Math.PI / 2); // knuckles
-  add(new THREE.CapsuleGeometry(0.55, 2.6, 4, 10), VM_MAT.glove, 2.8, HANDLE_Y + 2.1, 0.4, 0, 0, Math.PI / 2 - 0.25); // thumb
-  return g;
+function buildHand() {
+  const hand = new THREE.Group();
+  const leather = VM_MAT.glove;
+  const panel = new THREE.MeshStandardMaterial({ color: 0x424b43, roughness: 0.86 });
+  const rubber = new THREE.MeshStandardMaterial({ color: 0x181c1a, roughness: 0.72 });
+  const stitch = new THREE.MeshStandardMaterial({ color: 0x858b72, roughness: 1 });
+  const add = (geo, mat, x, y, z, sx = 1, sy = 1, sz = 1) => {
+    const mesh = new THREE.Mesh(geo, mat); mesh.position.set(x, y, z);
+    mesh.scale.set(sx, sy, sz); hand.add(mesh); return mesh;
+  };
+  const oval = (mat, x, y, z, sx, sy, sz) => add(new THREE.SphereGeometry(1, 24, 16), mat, x, y, z, sx, sy, sz);
+  // A connected palm and tapered wrist replace the floating torus fingers.
+  oval(leather, 4.35, 2.2, 1.15, 3.55, 1.65, 1.25);
+  oval(leather, 5.25, 3.3, 0.95, 2.05, 1.55, 1.12);
+  oval(panel, 4.6, 2.5, 2.15, 2.65, 1.15, 0.3);
+  // Curved, closed tubes form the fingers around the grip. Each joins the palm.
+  function digit(points, radius) {
+    const curve = new THREE.CatmullRomCurve3(points.map(p => new THREE.Vector3(...p)));
+    hand.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 24, radius, 12, false), leather));
+    for (const p of [points[0], points[points.length - 1]]) oval(leather, ...p, radius, radius, radius);
+  }
+  [2.7, 4.3, 5.9, 7.2].forEach((x, i) => {
+    const radius = i === 3 ? 0.48 : 0.57;
+    const points = i === 0
+      ? [[1.8,2.2,1.2],[0.6,1.1,0.8],[0,0,0],[0.1,-0.4,-0.8],[1.3,0.4,-0.9]]
+      : [[x,2.45,1.6],[x,0.65,1.25],[x,-0.1,0],[x,0.5,-1.0],[x,1.45,-0.85]];
+    digit(points, radius);
+    oval(rubber, x, 1.15, 1.76, radius * 0.88, 0.68, 0.25);
+    for (let j = 0; j < 3; j++) oval(stitch, x - 0.3 + j * 0.3, 2.65, 2.22, 0.06, 0.12, 0.035);
+  });
+  digit([[2.0,3.0,1.25],[1.4,2.2,0.8],[2.2,1.65,-0.3],[3.7,1.8,-0.75]], 0.65);
+  // Low-profile wrist strap and seam detail tie the glove into the sleeve.
+  oval(rubber, 5.4, 3.8, 1.3, 1.95, 0.45, 1.05);
+  oval(panel, 5.35, 3.85, 2.25, 1.1, 0.28, 0.12);
+  return hand;
 }
 // forearm lives in camera space and always runs from the wrist to the lower screen corner, so the wrist bends instead of the arm swinging
 function buildArm() {
@@ -1593,7 +1617,6 @@ function buildArm() {
 // CS2-style reverse grip: ring on top of the fist, blade curling forward/left out below the pinky
 const VM_REST = { pos: new THREE.Vector3(4, -6.8, -27), handle: new THREE.Vector3(1, 0.2, 0.05), spine: new THREE.Vector3(0, -1, 0.35), q: new THREE.Quaternion() };
 const VM_ARM_DIR = new THREE.Vector3(0.3, -0.93, 0.2); // forearm direction in camera space
-const VM_OFF_SHIFT = new THREE.Vector3(0, 0, 0);       // extra offset for the empty hand (in its mirrored space)
 function updateRestPose() {
   const x = VM_REST.handle.clone().normalize();
   const y = VM_REST.spine.clone().addScaledVector(x, -VM_REST.spine.dot(x)).normalize();
@@ -1604,12 +1627,9 @@ updateRestPose();
 
 const vm = {
   root: new THREE.Group(), anim: new THREE.Group(), pivot: new THREE.Group(), hand: buildHand(), arm: buildArm(), knife: null,
-  // the empty other hand: same rig mirrored to the opposite side of the screen
-  offRoot: new THREE.Group(), offAnim: new THREE.Group(), offArm: buildArm(),
   time: 0, drawT: 0, swapT: -1, clip: null, clipT: 0, nextAttack: 0, slashSide: 0,
 };
-vm.root.add(vm.anim, vm.arm, vm.offRoot); vm.anim.add(vm.hand, vm.pivot);
-vm.offRoot.scale.x = -1; vm.offRoot.add(vm.offAnim, vm.offArm); vm.offAnim.add(buildHand(false));
+vm.root.add(vm.anim, vm.arm); vm.anim.add(vm.hand, vm.pivot);
 vmScene.add(vm.root);
 function setKnifeModel(object3D) {
   if (vm.knife) vm.pivot.remove(vm.knife);
@@ -1745,14 +1765,7 @@ function updateViewmodel(dt) {
   vm.arm.quaternion.setFromUnitVectors(_up, dir);
   vm.arm.position.copy(_wrist).addScaledVector(dir, 1.3);
 
-  // empty hand: rest pose plus draw/swap dip and a slightly offset breath, no attack motion
-  const dip = vm.swapT >= 0 || vm.drawT < DRAW_TIME ? _vp.y + Math.sin(vm.time * 1.6) * -0.12 : 0;
-  vm.offAnim.quaternion.copy(VM_REST.q);
-  vm.offAnim.position.copy(VM_REST.pos).add(VM_OFF_SHIFT);
-  vm.offAnim.position.y += Math.min(0, dip) * 0.6 + Math.sin(vm.time * 1.6 + 0.7) * 0.12;
-  _wrist.copy(WRIST).applyQuaternion(vm.offAnim.quaternion).add(vm.offAnim.position);
-  vm.offArm.quaternion.setFromUnitVectors(_up, dir);
-  vm.offArm.position.copy(_wrist).addScaledVector(dir, 1.3);
+
 }
 
 /* =====================================================================
@@ -1794,7 +1807,7 @@ function frame(now) {
 // debug hooks (used for automated testing)
 window.bhop = { cv, pos, vel, keys, solids, teleports, CHECKPOINTS, get ground() { return ground && ground.kind; },
   get yaw() { return yaw; }, set yaw(v) { yaw = v; }, set pitch(v) { pitch = v; }, set mouseAcc(v) { mouseAcc = v; },
-  get runState() { return runState; }, get runTime() { return runTime; }, get lastFinish() { return lastFinish; }, get checkpoint() { return checkpoint; }, rec, ghost, getReplay, submitToLeaderboard, lbState, startWatching, stopWatching, view, set playing(v) { playing = v; }, get watching() { return watching; }, vm, WRIST, VM_REST, VM_ARM_DIR, VM_OFF_SHIFT, CLIPS, updateRestPose, vmAttack, vmInspect, run, get jumpLog() { return jumpLog; }, tick, restart, teleportTo, setCvar };
+  get runState() { return runState; }, get runTime() { return runTime; }, get lastFinish() { return lastFinish; }, get checkpoint() { return checkpoint; }, rec, ghost, getReplay, submitToLeaderboard, lbState, startWatching, stopWatching, view, set playing(v) { playing = v; }, get watching() { return watching; }, vm, WRIST, VM_REST, VM_ARM_DIR, CLIPS, updateRestPose, vmAttack, vmInspect, run, get jumpLog() { return jumpLog; }, tick, restart, teleportTo, setCvar };
 
 renderer.shadowMap.needsUpdate = true;
 syncMenu();

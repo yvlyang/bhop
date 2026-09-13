@@ -1,6 +1,6 @@
 // POST /api/runs  → submit a finished run with its replay; keeps each player's best per mode
 import {
-  MODES, REPLAY_SLOTS, cleanName, ensureSchema, json, noDatabase, playerIdFromToken, rankOf, validateRun,
+  MODES, REPLAY_SLOTS, claimName, cleanName, ensureSchema, json, noDatabase, playerIdFromToken, rankOf, validateRun,
 } from '../../lib/leaderboard.js';
 
 const MAX_BODY = 2_000_000; // a 10-minute replay is ~1.2 MB of JSON
@@ -23,6 +23,9 @@ export async function onRequestPost({ request, env }) {
   if (!check.ok) return json({ error: `run rejected: ${check.error}` }, 422);
 
   await ensureSchema(db);
+  if (!await claimName(db, playerId, name)) {
+    return json({ error: 'That name belongs to another player. Choose a different name.' }, 409);
+  }
   const now = Date.now();
   const existing = await db.prepare('SELECT time, created_at, updated_at FROM runs WHERE player_id = ?1 AND mode = ?2').bind(playerId, body.mode).first();
   if (existing && now - existing.updated_at < 5000) return json({ error: 'too many submissions, try again in a few seconds' }, 429);
