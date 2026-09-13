@@ -100,6 +100,8 @@
   .lb-empty { padding:26px 6px; text-align:center; color:var(--dim); font-size:13px; }
   .lb-me { padding-top:10px; font-size:12px; color:var(--dim); display:flex; justify-content:space-between; gap:10px; }
   .lb-runs { text-align:right; color:var(--dim); font-size:12px; }
+  .lb-status { font-size:12px; color:var(--dim); padding-top:6px; min-height:18px; }
+  .lb-status.bad { color:#ff8a8a; } .lb-status.good { color:#6fe07a; }
   .lb-headrow { color:var(--dim); font-size:10px; letter-spacing:.08em; border-bottom:1px solid var(--line); }
   .lb-headrow span { text-align:right; } .lb-headrow span:nth-child(2) { text-align:left; }
   #replayBar { position:fixed; left:50%; top:72px; transform:translateX(-50%); width:min(560px,90vw); background:rgba(10,14,22,.82);
@@ -183,6 +185,7 @@
     <div class="lb-name"><input id="lbName" maxlength="16" placeholder="Your name (2-16 characters)" autocomplete="off" spellcheck="false"><button id="lbNameSave">SAVE</button><span id="lbNameMsg"></span></div>
     <div class="lb-list" id="lbList"></div>
     <div class="lb-me" id="lbMe"></div>
+    <div class="lb-status" id="lbStatus"></div>
   </div>
 </div>
 <div id="replayBar" hidden>
@@ -1153,6 +1156,7 @@ function replayKey(e) {
    ONLINE LEADERBOARD — top 50 per mode, top 10 keep replays (Cloudflare Pages Functions + D1).
    Only available when the game is served from a website, not opened as a local file.
    ===================================================================== */
+const ON_PAGES_DEV = /\.pages\.dev$/.test(location.hostname); // the game's home is yvlyang.com/bhop/
 const LB_ONLINE = location.protocol.startsWith('http');
 // relative to the game, so it works at yvlyang.com/bhop/ (proxied) and at the game's own pages.dev address
 const apiUrl = (path) => new URL('api/' + path, location.origin + location.pathname.replace(/[^/]*$/, '')).href;
@@ -1183,20 +1187,36 @@ function countFinishedRun(mode, time) {
     .then(() => { if (!$('lb').hidden) loadLeaderboard(); }).catch(() => {});
 }
 
-async function submitToLeaderboard(saved, sync) {
+function lbStatus(text, kind = '') { const el = $('lbStatus'); el.textContent = text; el.className = 'lb-status' + (kind ? ' ' + kind : ''); }
+const rawReplay = (r) => ({ v: r.v, mode: r.mode, time: r.time, date: r.date, n: r.n, startIdx: r.startIdx, startTime: r.startTime, events: r.events, b64: r.b64 });
+
+async function submitToLeaderboard(saved, sync, { quiet = false } = {}) {
   if (!LB_ONLINE || saved.time < 3) return;
-  if (!validName(playerName())) { lbState.pending = { saved, sync }; toastLine('Set a name in Leaderboard to post this PB'); return; }
+  if (!validName(playerName())) { lbState.pending = { saved, sync }; lbStatus('Set a name above to post your best run'); if (!quiet) toastLine('Set a name in Leaderboard to post this PB'); return; }
   lbState.pending = null;
+  lbStatus(`Posting ${saved.mode === 'auto' ? 'Autohop' : 'Scroll'} ${fmtTime(saved.time)}…`);
   try {
-    const res = await fetch(apiUrl('runs'), {
-      method: 'POST', headers: { 'content-type': 'application/json' }, keepalive: JSON.stringify(saved).length < 60000,
-      body: JSON.stringify({ name: playerName().trim(), token: playerToken(), mode: saved.mode, time: saved.time, sync, replay: saved }),
-    });
+    const body = JSON.stringify({ name: playerName().trim(), token: playerToken(), mode: saved.mode, time: saved.time, sync, replay: saved });
+    const res = await fetch(apiUrl('runs'), { method: 'POST', headers: { 'content-type': 'application/json' }, keepalive: body.length < 60000, body });
     const data = await res.json().catch(() => ({}));
-    if (res.ok) toastLine(data.improved ? `Leaderboard: <b>#${data.rank}</b>` : `Leaderboard best stays ${fmtTime(data.time)} (#${data.rank})`);
-    else if (res.status !== 503) toastLine(`Leaderboard: ${escapeHtml(data.error || 'submit failed')}`);
+    if (res.ok) {
+      const text = data.improved ? `Posted ${fmtTime(saved.time)} · #${data.rank}` : `Leaderboard best stays ${fmtTime(data.time)} (#${data.rank})`;
+      lbStatus(text, 'good'); if (!quiet) toastLine(`Leaderboard: <b>#${data.rank}</b>`);
+    } else if (res.status !== 503) {
+      lbStatus(`Not posted: ${data.error || 'submit failed'}`, 'bad'); if (!quiet) toastLine(`Leaderboard: ${escapeHtml(data.error || 'submit failed')}`);
+    }
     if (!$('lb').hidden) loadLeaderboard();
-  } catch { /* offline: the PB is still saved locally */ }
+  } catch { lbStatus('Could not reach the leaderboard; your PB is still saved', 'bad'); }
+}
+
+// if this browser has a faster saved run than the server knows about (e.g. a PB that never got sent), send it
+const lbSynced = new Set();
+function syncLocalBest(mode, me) {
+  const r = getReplay(mode);
+  if (!r || r.time < 3 || lbSynced.has(mode + r.time)) return;
+  if (me && me.time != null && me.time <= r.time + 1e-6) return;
+  lbSynced.add(mode + r.time);
+  return submitToLeaderboard(rawReplay(r), null, { quiet: true });
 }
 
 async function loadLeaderboard() {
@@ -1221,6 +1241,7 @@ async function loadLeaderboard() {
       </div>`).join('') : '<div class="lb-empty">No runs yet. Be the first!</div>';
     const mine = data.me && data.me.time != null ? `Your best: ${fmtTime(data.me.time)} · #${data.me.rank}` : 'Beat your PB to get ranked';
     me.innerHTML = `<span>${mine} · your runs: <b>${data.me ? data.me.runs : 0}</b></span><span>${data.totalRuns || 0} runs total</span>`;
+    syncLocalBest(mode, data.me);
   } catch {
     list.innerHTML = '<div class="lb-empty">Could not reach the leaderboard.</div>';
   }
@@ -1246,7 +1267,18 @@ function openLeaderboard() {
   $('lb').hidden = false;
   loadLeaderboard();
 }
-if (LB_ONLINE) $('lbOpen').hidden = false;
+if (LB_ONLINE) {
+  $('lbOpen').hidden = false;
+  setTimeout(async () => {
+    await Promise.allSettled(['auto', 'scroll'].map(async (m) => {
+      const res = await fetch(apiUrl(`leaderboard?mode=${m}`), { headers: { 'x-player-token': playerToken() } });
+      const data = await res.json();
+      if (res.ok) await syncLocalBest(m, data.me);
+    }));
+    // the pages.dev copy keeps separate saves: post anything it has, then send players to yvlyang.com/bhop/
+    if (ON_PAGES_DEV) location.replace('https://yvlyang.com/bhop/' + location.search);
+  }, ON_PAGES_DEV ? 0 : 1500);
+}
 $('lbOpen').addEventListener('click', openLeaderboard);
 $('lbClose').addEventListener('click', () => { $('lb').hidden = true; });
 $('lb').addEventListener('click', (e) => { if (e.target.id === 'lb') $('lb').hidden = true; });
