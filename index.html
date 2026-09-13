@@ -28,19 +28,19 @@
   #speedo { position:absolute; left:50%; top:62%; transform:translateX(-50%); text-align:center; }
   #speed { font-size:30px; font-weight:700; transition:color .12s; }
   #speed.up { color:#6fe07a; } #speed.down { color:#ff6b6b; }
-  #jumpInfo { font-size:12px; font-weight:600; letter-spacing:.06em; min-height:15px; }
+  #jumpInfo { font-size:14px; font-weight:600; letter-spacing:.06em; min-height:17px; }
 
-  #showkeys { position:absolute; left:50%; top:calc(62% + 62px); transform:translateX(-50%); display:flex; gap:4px; }
-  #showkeys b { display:inline-flex; align-items:center; justify-content:center; width:30px; height:28px; font-size:13px; font-weight:700;
+  #showkeys { position:absolute; left:50%; top:calc(62% + 62px); transform:translateX(-50%); display:flex; gap:2px; }
+  #showkeys b { display:inline-flex; align-items:center; justify-content:center; width:34px; height:32px; font-size:15px; font-weight:700;
     border-radius:4px; background:rgba(0,0,0,.3); color:rgba(230,235,240,.4); }
   #showkeys b.on { background:rgba(240,244,248,.9); color:#111; text-shadow:none; }
   #showkeys b.good { background:var(--good); color:#06170b; text-shadow:none; }
   #showkeys b.bad { background:var(--bad); color:#1e0505; text-shadow:none; }
 
-  #stats { position:absolute; right:16px; top:50%; transform:translateY(-50%); font-size:12px; width:210px; color:#dfe5ea; }
-  #runStats { display:grid; grid-template-columns:1fr 1fr; gap:2px 10px; margin-bottom:10px; color:#9aa3ad; }
+  #stats { position:absolute; right:16px; top:50%; transform:translateY(-50%); font-size:14px; width:260px; color:#dfe5ea; }
+  #runStats { display:grid; grid-template-columns:1fr 1fr; gap:3px 12px; margin-bottom:12px; color:#9aa3ad; }
   #runStats b { color:#fff; font-weight:600; float:right; }
-  #jumpList .j { display:grid; grid-template-columns:24px 1fr 40px 36px 42px; padding:2px 0; }
+  #jumpList .j { display:grid; grid-template-columns:28px 1fr 48px 42px 50px; padding:3px 0; }
   #jumpList .j span:first-child { color:var(--dim); }
   #jumpList .j span:last-child { text-align:right; }
   .perf { color:#6fe07a; } .late { color:#ff6b6b; }
@@ -169,7 +169,7 @@
   <div id="timerBox"><div id="timer" class="num">0:00.000</div><div id="timerSub" class="num"></div></div>
   <div id="crosshair"><i class="t"></i><i class="b"></i><i class="l"></i><i class="r"></i></div>
   <div id="speedo"><div id="speed" class="num">0</div><div id="jumpInfo"></div></div>
-  <div id="showkeys"><b id="skL"><svg viewBox="0 0 10 10" width="9" height="9" aria-hidden="true"><path d="M8 1 2 5l6 4z" fill="currentColor"/></svg></b><b id="skA">A</b><b id="skD">D</b><b id="skR"><svg viewBox="0 0 10 10" width="9" height="9" aria-hidden="true"><path d="M2 1l6 4-6 4z" fill="currentColor"/></svg></b></div>
+  <div id="showkeys"><b id="skL"><svg viewBox="0 0 10 10" width="11" height="11" aria-hidden="true"><path d="M8 1 2 5l6 4z" fill="currentColor"/></svg></b><b id="skA">A</b><b id="skD">D</b><b id="skR"><svg viewBox="0 0 10 10" width="11" height="11" aria-hidden="true"><path d="M2 1l6 4-6 4z" fill="currentColor"/></svg></b></div>
   <div id="stats" hidden><div id="runStats" class="num"></div><div id="jumpList"></div></div>
   <div id="showpos"></div>
   <div id="toast"></div>
