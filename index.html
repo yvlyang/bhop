@@ -1526,12 +1526,26 @@ function applyViewmodelLighting(k) {
   vmScene.environmentIntensity = 1 - 0.6 * k;
 }
 
+// Fine leather grain catches light without an external texture download.
+const leatherGrain = (() => {
+  const size = 128, data = new Uint8Array(size * size * 4);
+  let seed = 137;
+  for (let i = 0; i < size * size; i++) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) | 0;
+    const value = 110 + ((seed >>> 24) % 65);
+    data.set([value, value, value, 255], i * 4);
+  }
+  const texture = new THREE.DataTexture(data, size, size);
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(3, 3); texture.magFilter = THREE.LinearFilter;
+  texture.needsUpdate = true; return texture;
+})();
 const VM_MAT = {
   steel: new THREE.MeshStandardMaterial({ color: 0xd6dade, metalness: 1, roughness: 0.26 }),
   grip:  new THREE.MeshStandardMaterial({ color: 0x1c1d20, metalness: 0.1, roughness: 0.7 }),
-  glove: new THREE.MeshStandardMaterial({ color: 0x2b2e33, metalness: 0, roughness: 0.92 }),
-  cuff:  new THREE.MeshStandardMaterial({ color: 0x3a3f36, metalness: 0, roughness: 0.95 }),
-  sleeve: new THREE.MeshStandardMaterial({ color: 0x59634c, metalness: 0, roughness: 0.95 }),
+  glove: new THREE.MeshStandardMaterial({ color: 0x252724, metalness: 0, roughness: 0.83, bumpMap: leatherGrain, bumpScale: 0.045 }),
+  cuff:  new THREE.MeshStandardMaterial({ color: 0x292b29, metalness: 0, roughness: 0.95 }),
+  sleeve: new THREE.MeshStandardMaterial({ color: 0x434741, metalness: 0, roughness: 0.95 }),
 };
 
 // knife space: ring center at the origin, handle along +x, blade curls down past the pinky, flat in the XY plane
@@ -1565,23 +1579,36 @@ function buildKarambit() {
 
 // stylized glove in knife space: index finger through the ring, three fingers wrapped round the handle
 const HANDLE_Y = 1.5;                                        // the karambit's handle axis sits this far above the ring center
-const WRIST = new THREE.Vector3(5.5, HANDLE_Y + 2.2, 0.8);   // wrist joint in knife space (under the fist): animations bend around it
+const WRIST = new THREE.Vector3(5.5, HANDLE_Y + 4.2, -0.8);   // wrist joint in knife space (under the fist): animations bend around it
 // knuckles sit on the side the blade curls toward (CS2 grip: knuckles up, blade curling up past the pinky)
 function buildHand() {
   const hand = new THREE.Group();
+  hand.scale.z = -1; // Show the back of the glove in the reverse grip.
   const leather = VM_MAT.glove;
-  const panel = new THREE.MeshStandardMaterial({ color: 0x424b43, roughness: 0.86 });
+  const panel = new THREE.MeshStandardMaterial({ color: 0x30332e, roughness: 0.88, bumpMap: leatherGrain, bumpScale: 0.035 });
   const rubber = new THREE.MeshStandardMaterial({ color: 0x181c1a, roughness: 0.72 });
-  const stitch = new THREE.MeshStandardMaterial({ color: 0x858b72, roughness: 1 });
+  const stitch = new THREE.MeshStandardMaterial({ color: 0x54544a, roughness: 1 });
   const add = (geo, mat, x, y, z, sx = 1, sy = 1, sz = 1) => {
     const mesh = new THREE.Mesh(geo, mat); mesh.position.set(x, y, z);
     mesh.scale.set(sx, sy, sz); hand.add(mesh); return mesh;
   };
   const oval = (mat, x, y, z, sx, sy, sz) => add(new THREE.SphereGeometry(1, 24, 16), mat, x, y, z, sx, sy, sz);
   // A connected palm and tapered wrist replace the floating torus fingers.
-  oval(leather, 4.35, 2.2, 1.15, 3.55, 1.65, 1.25);
-  oval(leather, 5.25, 3.3, 0.95, 2.05, 1.55, 1.12);
-  oval(panel, 4.6, 2.5, 2.15, 2.65, 1.15, 0.3);
+  const palmShape = new THREE.Shape();
+  palmShape.moveTo(1.6, 1.2);
+  palmShape.bezierCurveTo(2.1, 0.4, 6.3, 0.25, 7.7, 1.0);
+  palmShape.bezierCurveTo(8.0, 2.3, 7.2, 4.1, 6.9, 5.6);
+  palmShape.quadraticCurveTo(5.3, 6.2, 3.6, 5.6);
+  palmShape.bezierCurveTo(3.2, 4.1, 1.3, 3.2, 1.6, 1.2);
+  const palmGeo = new THREE.ExtrudeGeometry(palmShape, {depth:1.15, bevelEnabled:true, bevelThickness:0.45, bevelSize:0.45, bevelSegments:5, curveSegments:20});
+  palmGeo.translate(0, 0, 0.6);
+  const vertices = palmGeo.attributes.position;
+  for (let i = 0; i < vertices.count; i++) {
+    const x = vertices.getX(i), y = vertices.getY(i), z = vertices.getZ(i);
+    if (z > 1.3) vertices.setZ(i, z + 0.38 * Math.sin(Math.PI * Math.max(0, Math.min(1, (x - 1.2) / 7))) * Math.sin(Math.PI * Math.max(0, Math.min(1, y / 6.3))));
+  }
+  palmGeo.computeVertexNormals();
+  hand.add(new THREE.Mesh(palmGeo, leather));
   // Curved, closed tubes form the fingers around the grip. Each joins the palm.
   function digit(points, radius) {
     const curve = new THREE.CatmullRomCurve3(points.map(p => new THREE.Vector3(...p)));
@@ -1589,34 +1616,40 @@ function buildHand() {
     for (const p of [points[0], points[points.length - 1]]) oval(leather, ...p, radius, radius, radius);
   }
   [2.7, 4.3, 5.9, 7.2].forEach((x, i) => {
-    const radius = i === 3 ? 0.48 : 0.57;
+    const radius = i === 3 ? 0.46 : 0.52;
     const points = i === 0
       ? [[1.8,2.2,1.2],[0.6,1.1,0.8],[0,0,0],[0.1,-0.4,-0.8],[1.3,0.4,-0.9]]
       : [[x,2.45,1.6],[x,0.65,1.25],[x,-0.1,0],[x,0.5,-1.0],[x,1.45,-0.85]];
     digit(points, radius);
-    oval(rubber, x, 1.15, 1.76, radius * 0.88, 0.68, 0.25);
-    for (let j = 0; j < 3; j++) oval(stitch, x - 0.3 + j * 0.3, 2.65, 2.22, 0.06, 0.12, 0.035);
+    oval(leather, x, 1.05, 2.16, radius * 1.1, 0.55, 0.25);
+    // Panel seams follow the fingers into the back of the hand.
+    const seam = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(x - 0.42, 1.1, 2.38), new THREE.Vector3(x - 0.42, 2.7, 2.57),
+      new THREE.Vector3(x - 0.3, 4.3, 2.47)]);
+    hand.add(new THREE.Mesh(new THREE.TubeGeometry(seam, 14, 0.017, 5, false), stitch));
+
   });
   digit([[2.0,3.0,1.25],[1.4,2.2,0.8],[2.2,1.65,-0.3],[3.7,1.8,-0.75]], 0.65);
   // Low-profile wrist strap and seam detail tie the glove into the sleeve.
-  oval(rubber, 5.4, 3.8, 1.3, 1.95, 0.45, 1.05);
-  oval(panel, 5.35, 3.85, 2.25, 1.1, 0.28, 0.12);
+  oval(rubber, 5.3, 5.6, 1.3, 1.95, 0.48, 1.05);
+  oval(panel, 5.3, 5.3, 2.5, 1.45, 0.32, 0.12);
+  oval(rubber, 5.7, 5.3, 2.65, 0.25, 0.23, 0.065);
   return hand;
 }
 // forearm lives in camera space and always runs from the wrist to the lower screen corner, so the wrist bends instead of the arm swinging
 function buildArm() {
   const g = new THREE.Group();
-  g.add(new THREE.Mesh(new THREE.CylinderGeometry(1.8, 1.9, 2.6, 16), VM_MAT.cuff));
-  const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(2.05, 2.7, 34, 16), VM_MAT.sleeve);
-  sleeve.position.y = 17.9; g.add(sleeve);
+  g.add(new THREE.Mesh(new THREE.CylinderGeometry(1.65, 1.8, 1.4, 24), VM_MAT.cuff));
+  const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(1.85, 2.65, 34, 24), VM_MAT.sleeve);
+  sleeve.position.y = 17.5; g.add(sleeve);
   return g;
 }
 
 // rest pose in viewmodel-camera space (right hand; the left hand mirrors the whole rig).
 // handle = direction from the ring toward the blade, spine = the blade's back (it curls the other way)
 // CS2-style reverse grip: ring on top of the fist, blade curling forward/left out below the pinky
-const VM_REST = { pos: new THREE.Vector3(4, -6.8, -27), handle: new THREE.Vector3(1, 0.2, 0.05), spine: new THREE.Vector3(0, -1, 0.35), q: new THREE.Quaternion() };
-const VM_ARM_DIR = new THREE.Vector3(0.3, -0.93, 0.2); // forearm direction in camera space
+const VM_REST = { pos: new THREE.Vector3(6, -6.1, -34), handle: new THREE.Vector3(1, 0.2, 0.05), spine: new THREE.Vector3(0, -1, 0.35), q: new THREE.Quaternion() };
+const VM_ARM_DIR = new THREE.Vector3(0.64, -0.7, 0.3); // forearm direction in camera space
 function updateRestPose() {
   const x = VM_REST.handle.clone().normalize();
   const y = VM_REST.spine.clone().addScaledVector(x, -VM_REST.spine.dot(x)).normalize();
@@ -1763,7 +1796,7 @@ function updateViewmodel(dt) {
   const dir = _w.copy(VM_ARM_DIR).normalize();
   _wrist.copy(WRIST).applyQuaternion(vm.anim.quaternion).add(vm.anim.position);
   vm.arm.quaternion.setFromUnitVectors(_up, dir);
-  vm.arm.position.copy(_wrist).addScaledVector(dir, 1.3);
+  vm.arm.position.copy(_wrist).addScaledVector(dir, 0.7);
 
 
 }
