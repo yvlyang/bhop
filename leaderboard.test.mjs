@@ -6,6 +6,8 @@ import { onRequestGet as replay } from './functions/api/replay.js';
 import { onRequestPost as finish } from './functions/api/finish.js';
 import { onRequestPost as submit } from './functions/api/runs.js';
 import map from './maps/kz_hub_clean.json' with { type: 'json' };
+import validationMap from './lib/kz-map.js';
+assert.deepEqual(validationMap, { triggers: map.triggers, teleports: map.teleports, spawn: map.spawn });
 import { onRequestPost } from './functions/api/name.js';
 const sqlite = new DatabaseSync(':memory:');
 const db = { prepare(sql) { return { values: [], bind(...v) { this.values=v; return this; }, async run() { return sqlite.prepare(sql).run(...this.values); }, async first() { return sqlite.prepare(sql).get(...this.values); }, sql }; }, async batch(stmts) { sqlite.exec('BEGIN'); try { for (const s of stmts) sqlite.prepare(s.sql).run(...s.values); sqlite.exec('COMMIT'); } catch(e) { sqlite.exec('ROLLBACK'); throw e; } } };
