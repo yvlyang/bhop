@@ -283,6 +283,7 @@ const DEG = Math.PI / 180;
 // ?map=kz_hub plays the KZ map; anything else is bhop_brick
 const MAP_ID = new URLSearchParams(location.search).get('map') === 'kz_hub' ? 'kz_hub' : 'bhop_brick';
 const IS_KZ = MAP_ID !== 'bhop_brick';
+const IS_EDITOR = IS_KZ && new URLSearchParams(location.search).get('editor') === '1';
 let KZMAP = null;
 if (IS_KZ) {
   try { KZMAP = await fetch(new URL('maps/kz_hub.json', location.href)).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }); }
@@ -1901,6 +1902,7 @@ addEventListener('contextmenu', (e) => { if (playing) e.preventDefault(); });
 addEventListener('blur', () => { for (const k in keys) keys[k] = false; mouseHeld[0] = mouseHeld[2] = false; });
 
 addEventListener('keydown', (e) => {
+  if (IS_EDITOR) return;
   if (e.code === 'Backquote') { e.preventDefault(); toggleConsole(); return; }
   if (watching && !consoleOpen) { replayKey(e); return; }
   if (consoleOpen || !playing) return;
@@ -2314,7 +2316,9 @@ restart();
 showLeaderboard();
 // ?preview hides the menu + HUD (used for the portfolio screenshot)
 if (new URLSearchParams(location.search).has('preview')) { menu.hidden = true; $('hud').style.display = 'none'; }
-requestAnimationFrame(frame);
+if (IS_EDITOR) {
+  await import('./map-editor.js').then(({ startEditor }) => startEditor({ THREE, renderer, map: KZMAP }));
+} else requestAnimationFrame(frame);
 </script>
 <script>
   setTimeout(() => { if (!window.bhop) showFatal('The game did not start. If there is no other error above, Three.js could not be loaded from cdn.jsdelivr.net — check your internet connection.'); }, 6000);
