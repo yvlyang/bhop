@@ -280,14 +280,15 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const $ = (id) => document.getElementById(id);
 const DEG = Math.PI / 180;
-// ?map=kz_hub plays the KZ map; anything else is bhop_brick
-const MAP_ID = new URLSearchParams(location.search).get('map') === 'kz_hub' ? 'kz_hub' : 'bhop_brick';
+// ?map=kz_hub or ?map=kz_hub_clean plays a KZ map; anything else is bhop_brick
+const KZ_MAPS = ['kz_hub', 'kz_hub_clean'];
+const MAP_ID = KZ_MAPS.includes(new URLSearchParams(location.search).get('map')) ? new URLSearchParams(location.search).get('map') : 'bhop_brick';
 const IS_KZ = MAP_ID !== 'bhop_brick';
 const IS_EDITOR = IS_KZ && new URLSearchParams(location.search).get('editor') === '1';
 let KZMAP = null;
 if (IS_KZ) {
-  try { KZMAP = await fetch(new URL('maps/kz_hub.json', location.href)).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }); }
-  catch (e) { showFatal(`Could not load kz_hub: ${e.message}`); throw e; }
+  try { KZMAP = await fetch(new URL(`maps/${MAP_ID}.json`, location.href)).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }); }
+  catch (e) { showFatal(`Could not load ${MAP_ID}: ${e.message}`); throw e; }
 }
 
 /* =====================================================================
@@ -721,6 +722,146 @@ function solidAt(set, x, y, z, h) {
   return false;
 }
 
+const PART_MATERIAL = { crateA: 'crate', crateB: 'crate', wall: 'wall', stripe: 'stripe', floor: 'floor', ledge: 'ledge', roof: 'roof',
+  steel: 'steel', ladder: 'steel', wood: 'wood', grate: 'grate', fence: 'glass', start: 'neon', finish: 'neon' };
+function partTexture(kind) {
+  const S = 256, [c, g] = cnv(S, S), r = rng({ crate: 21, wall: 22, floor: 23, ledge: 24, roof: 25, steel: 26, wood: 27, grate: 28 }[kind]);
+  const L = new Float32Array(S * S).fill(1);
+  const lattice = (period) => { const a = new Float32Array(period * period); for (let i = 0; i < a.length; i++) a[i] = r(); return a; };
+  const vnoise = (lat, period, x, y) => {
+    const fx = (x / S) * period, fy = (y / S) * period, ix = Math.floor(fx), iy = Math.floor(fy), tx = fx - ix, ty = fy - iy;
+    const at = (i, j) => lat[((j % period) + period) % period * period + ((i % period) + period) % period];
+    const sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
+    return (at(ix, iy) * (1 - sx) + at(ix + 1, iy) * sx) * (1 - sy) + (at(ix, iy + 1) * (1 - sx) + at(ix + 1, iy + 1) * sx) * sy;
+  };
+  const band = (d, w) => Math.max(0, 1 - Math.abs(d) / w);
+  if (kind === 'crate') {
+    const n = lattice(16);
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const rx = ((x % 32) + 32) % 32;
+      L[y * S + x] = 0.86 + 0.08 * vnoise(n, 16, x, y) - 0.22 * band(rx - 2, 2.5) + 0.1 * band(rx - 6, 2) - 0.3 * band((y % 256) - 1, 1.5);
+    }
+  } else if (kind === 'wall') {
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) L[y * S + x] = 0.84 + 0.16 * (0.5 + 0.5 * Math.cos((2 * Math.PI * x) / 16));
+  } else if (kind === 'floor') {
+    for (let i = 0; i < S * S; i++) L[i] = 0.62 + 0.38 * r() - (r() < 0.02 ? 0.35 : 0);
+  } else if (kind === 'ledge') {
+    const a = lattice(4), b = lattice(8), d = lattice(32);
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) L[y * S + x] = 0.35 + 0.35 * vnoise(a, 4, x, y) + 0.2 * vnoise(b, 8, x, y) + 0.1 * vnoise(d, 32, x, y);
+  } else if (kind === 'roof') {
+    const tone = lattice(8);
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const row = Math.floor(y / 64), xo = (x + (row % 2) * 64) % S, col = Math.floor(xo / 128);
+      L[y * S + x] = 0.78 + 0.18 * tone[(row % 4) * 8 + (col % 2)] - 0.55 * Math.max(band((y % 64) - 1, 1.5), band((xo % 128) - 1, 1.5));
+    }
+  } else if (kind === 'steel') {
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      let v = 0.7;
+      for (const [cx0, cy0, dir] of [[8, 8, 1], [24, 24, -1], [8 + 32, 8, 1], [24 - 32, 24, -1], [8, 8 + 32, 1], [24, 24 - 32, -1]]) {
+        const dx = ((x - cx0) % 32 + 48) % 32 - 16, dy = ((y - cy0) % 32 + 48) % 32 - 16;
+        const u = (dx + dir * dy) / Math.SQRT2, w = (dx - dir * dy) / Math.SQRT2;
+        const inside = Math.abs(u) / 7 + Math.abs(w) / 2.2;
+        if (inside < 1) { v = 0.95 + 0.25 * (w / 2.2) * dir - 0.1 * inside; break; }
+      }
+      L[y * S + x] = v;
+    }
+  } else if (kind === 'wood') {
+    const grain = lattice(64), tone = lattice(4);
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const row = Math.floor(y / 64), xo = (x + row * 96) % S;
+      const g1 = vnoise(grain, 64, xo * 0.25, y * 4);
+      L[y * S + x] = 0.7 + 0.15 * tone[row % 4] + 0.18 * g1 - 0.6 * Math.max(band((y % 64) - 1, 1.5), band((xo % 256) - 1, 1.5));
+    }
+  } else if (kind === 'grate') {
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const bx = ((x % 16) + 16) % 16, by = ((y % 32) + 32) % 32;
+      const slot = bx >= 4 && bx <= 13 && by >= 4 && by <= 29;
+      L[y * S + x] = slot ? 0.25 + 0.1 * (by / 32) : 0.95 - 0.1 * band(bx - 2, 1);
+    }
+  }
+  const img = g.createImageData(S, S), d = img.data;
+  for (let i = 0; i < S * S; i++) { const v = Math.round(255 * (0.85 + 0.15 * Math.min(1, Math.max(0, L[i])))); d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = v; d[i * 4 + 3] = 255; }
+  g.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = maxAniso; t.colorSpace = THREE.NoColorSpace;
+  return t;
+}
+const PART_TILE = 64;
+function buildParts(parts) {
+  const groups = {}, hsl = {};
+  const group = (k) => (groups[k] ||= { pos: [], nrm: [], uv: [], col: [] });
+  const shade = (color, n, flat) => {
+    if (flat) return color;
+    const k = n[1] > 0.7 ? 0.08 : n[1] < -0.7 ? -0.2 : Math.abs(n[0]) >= Math.abs(n[2]) ? -0.04 : -0.1;
+    color.getHSL(hsl);
+    return new THREE.Color().setHSL(hsl.h, hsl.s, Math.min(1, Math.max(0, hsl.l * (1 + k))));
+  };
+  const quad = (G, P, color, center, flat) => {
+    let nx = 0, ny = 0, nz = 0;
+    for (let i = 0; i < P.length; i++) { const p = P[i], q = P[(i + 1) % P.length]; nx += (p[1] - q[1]) * (p[2] + q[2]); ny += (p[2] - q[2]) * (p[0] + q[0]); nz += (p[0] - q[0]) * (p[1] + q[1]); }
+    const l = Math.hypot(nx, ny, nz); if (l < 1e-6) return;
+    nx /= l; ny /= l; nz /= l;
+    const fc = [0, 1, 2].map((a) => P.reduce((s, p) => s + p[a], 0) / P.length);
+    if (nx * (fc[0] - center[0]) + ny * (fc[1] - center[1]) + nz * (fc[2] - center[2]) < 0) { P = P.slice().reverse(); nx = -nx; ny = -ny; nz = -nz; }
+    let tu, tv;
+    if (Math.abs(ny) > 0.7) { tu = [1, 0, 0]; tv = [0, 0, 1]; }
+    else { const h = Math.hypot(nx, nz) || 1; tu = [nz / h, 0, -nx / h]; tv = [ny * tu[2], nz * tu[0] - nx * tu[2], -ny * tu[0]]; }
+    const c = shade(color, [nx, ny, nz], flat);
+    for (let k = 1; k < P.length - 1; k++) for (const p of [P[0], P[k], P[k + 1]]) {
+      G.pos.push(p[0], p[1], p[2]); G.nrm.push(nx, ny, nz); G.col.push(c.r, c.g, c.b);
+      G.uv.push((p[0] * tu[0] + p[1] * tu[1] + p[2] * tu[2]) / PART_TILE, (p[0] * tv[0] + p[1] * tv[1] + p[2] * tv[2]) / PART_TILE);
+    }
+  };
+  const HEX_FACES = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]];
+  const addHex = (G, v, color, flat) => {
+    const center = [0, 1, 2].map((a) => v.reduce((s, q) => s + q[a], 0) / v.length);
+    for (const f of HEX_FACES) quad(G, f.map((i) => v[i]), color, center, flat);
+  };
+  const lerp = (p, q, t) => [0, 1, 2].map((k) => p[k] + (q[k] - p[k]) * t);
+  const at = (v, a, b, c) => lerp(lerp(lerp(v[0], v[1], a), lerp(v[3], v[2], a), b), lerp(lerp(v[4], v[5], a), lerp(v[7], v[6], a), b), c);
+  const sub = (v, a0, a1, b0, b1, c0, c1) => [at(v, a0, b0, c0), at(v, a1, b0, c0), at(v, a1, b1, c0), at(v, a0, b1, c0), at(v, a0, b0, c1), at(v, a1, b0, c1), at(v, a1, b1, c1), at(v, a0, b1, c1)];
+  const dist = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+  const frameColor = new THREE.Color('#F2C230'), glassColor = new THREE.Color('#BFD9E6');
+  for (const P of parts) {
+    const kind = PART_MATERIAL[P.role]; if (!kind) continue;
+    if (kind === 'glass') {
+      addHex(group('glass'), P.v, glassColor, true);
+      const la = dist(P.v[0], P.v[1]), lb = dist(P.v[0], P.v[3]), H = dist(P.v[0], P.v[4]), e = 0.06;
+      const t = 2 / H;
+      if (la >= lb) {
+        const s = 2 / la, pad = e / lb;
+        for (const box of [sub(P.v, -e / la, 1 + e / la, -pad, 1 + pad, 1 - t, 1 + e / H), sub(P.v, -e / la, s, -pad, 1 + pad, 0, 1 - t), sub(P.v, 1 - s, 1 + e / la, -pad, 1 + pad, 0, 1 - t)]) addHex(group('steel'), box, frameColor, false);
+      } else {
+        const s = 2 / lb, pad = e / la;
+        for (const box of [sub(P.v, -pad, 1 + pad, -e / lb, 1 + e / lb, 1 - t, 1 + e / H), sub(P.v, -pad, 1 + pad, -e / lb, s, 0, 1 - t), sub(P.v, -pad, 1 + pad, 1 - s, 1 + e / lb, 0, 1 - t)]) addHex(group('steel'), box, frameColor, false);
+      }
+      continue;
+    }
+    addHex(group(kind), P.v, P.color, kind === 'neon');
+  }
+  const std = (map, roughness, metalness = 0) => new THREE.MeshStandardMaterial({ map, vertexColors: true, roughness, metalness });
+  const mats = {
+    crate: std(partTexture('crate'), 0.5, 0.15), wall: std(partTexture('wall'), 0.65), stripe: std(null, 0.5), floor: std(partTexture('floor'), 0.9),
+    ledge: std(partTexture('ledge'), 0.85), roof: std(partTexture('roof'), 0.8), steel: std(partTexture('steel'), 0.45, 0.35), wood: std(partTexture('wood'), 0.75),
+    grate: std(partTexture('grate'), 0.5),
+    glass: new THREE.MeshStandardMaterial({ color: 0xbfd9e6, roughness: 0.1, metalness: 0, transparent: true, opacity: 0.18, depthWrite: false, side: THREE.DoubleSide }),
+    neon: new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false }),
+  };
+  const bounds = new THREE.Box3(), meshes = [];
+  for (const [kind, G] of Object.entries(groups)) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(G.pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(G.nrm, 3));
+    if (kind !== 'glass') { g.setAttribute('color', new THREE.Float32BufferAttribute(G.col, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(G.uv, 2)); }
+    const mesh = new THREE.Mesh(g, mats[kind]);
+    mesh.name = `parts_${kind}`;
+    mesh.castShadow = kind !== 'glass' && kind !== 'neon'; mesh.receiveShadow = kind !== 'neon';
+    if (kind === 'glass') mesh.renderOrder = 1;
+    scene.add(mesh); meshes.push(mesh);
+    if (kind !== 'glass') { g.computeBoundingBox(); bounds.union(g.boundingBox); }
+  }
+  return { bounds, meshes };
+}
+
 /* =====================================================================
    KZ MAP BUILD — Roblox-style parts colored like the original, triggers from the map's own logic
    ===================================================================== */
@@ -730,7 +871,8 @@ function buildKzLevel(M) {
   const Q = M.quant, O = M.origin;
   const bytes = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
   const point = (dv, o) => srcToThree(dv.getInt16(o, true) / Q + O[0], dv.getInt16(o + 2, true) / Q + O[1], dv.getInt16(o + 4, true) / Q + O[2]);
-  const pal = M.palette.map((p) => ({ color: new THREE.Color(`rgb(${p.rgb.join(',')})`), glass: p.glass }));
+  const pal = M.palette.map((p) => ({ color: new THREE.Color(`rgb(${p.rgb.join(',')})`), glass: p.glass, role: p.role }));
+  const parts = M.palette.some((p) => p.role) ? [] : null;
   const geo = { solid: { pos: [], nrm: [], col: [] }, glass: { pos: [], nrm: [], col: [] } };
   const tri = (G, a, b, c, color, out) => {
     const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
@@ -746,7 +888,9 @@ function buildKzLevel(M) {
     const nv = hb[o], nf = hb[o + 1], p = pal[hv.getUint16(o + 2, true)]; o += 4;
     const v = []; for (let i = 0; i < nv; i++, o += 6) v.push(point(hv, o));
     const faces = []; for (let f = 0; f < nf; f++) { const n = hb[o]; faces.push(Array.from(hb.subarray(o + 1, o + 1 + n))); o += 1 + n; }
-    solid.push(convexBrush(v, faces));
+    const br = convexBrush(v, faces);
+    solid.push(br);
+    if (parts) { if (p.role === 'ladder') ladders.push(br); parts.push({ v, role: p.role, color: p.color }); continue; }
     const c = [0, 1, 2].map((a) => v.reduce((s, q) => s + q[a], 0) / nv);
     for (const f of faces) {
       const out = [0, 1, 2].map((a) => f.reduce((s, i) => s + v[i][a], 0) / f.length - c[a]);
@@ -766,8 +910,10 @@ function buildKzLevel(M) {
   brushSet = makeBrushSet(solid); ladderSet = makeBrushSet(ladders);
 
   const bounds = new THREE.Box3();
+  if (parts) { level = { parts: buildParts(parts) }; bounds.copy(level.parts.bounds); }
   for (const [G, mat] of [[geo.solid, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0, side: THREE.DoubleSide })],
     [geo.glass, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.35, metalness: 0, transparent: true, opacity: 0.45, side: THREE.DoubleSide, depthWrite: false })]]) {
+    if (!G.pos.length) continue;
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(G.pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(G.nrm, 3));
@@ -792,7 +938,7 @@ function buildKzLevel(M) {
   const arrow = new THREE.Mesh(new THREE.ConeGeometry(10, 22, 4), new THREE.MeshBasicMaterial({ color: 0xffd23a }));
   arrow.rotation.x = Math.PI; scene.add(arrow);
   level = {
-    triggers, fails: 0, off: new Set(), arrow,
+    triggers, fails: 0, off: new Set(), arrow, parts: level && level.parts,
     tp(n) { const t = M.teleports[n]; return t ? { pos: srcToThree(...t.pos), yaw: -t.yaw * DEG } : spawn; },
     reset() {
       this.fails = 0; this.off = new Set(triggers.filter((t) => t.disabled).map((t) => t.name));
