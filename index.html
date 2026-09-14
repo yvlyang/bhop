@@ -723,14 +723,15 @@ function resetRun() {
   jumpLog = []; renderJumpList();
 }
 
+// PBs and replays from before the timer started on the first jump aren't comparable, so v2 starts fresh
+const PB_KEY = 'bhop_brick_pb_v2', REPLAY_KEY = 'bhop_brick_replay_v2_';
 let pbCache = null;
 function loadPB() {
   if (pbCache) return pbCache;
-  try { pbCache = JSON.parse(localStorage.getItem('bhop_brick_1to1_pb') || '{}'); } catch { pbCache = {}; }
-  for (const m of ['auto', 'scroll']) { const old = pbCache[`${m}|bhop|100`]; if (old && !(pbCache[m] <= old)) pbCache[m] = old; }
+  try { pbCache = JSON.parse(localStorage.getItem(PB_KEY) || '{}'); } catch { pbCache = {}; }
   return pbCache;
 }
-function savePB(obj) { pbCache = obj; try { localStorage.setItem('bhop_brick_1to1_pb', JSON.stringify(obj)); } catch {} }
+function savePB(obj) { pbCache = obj; try { localStorage.setItem(PB_KEY, JSON.stringify(obj)); } catch {} }
 
 const overlaps = (z) => pos.x + HW > z.min.x && pos.x - HW < z.max.x && pos.y + hullH > z.min.y && pos.y < z.max.y && pos.z + HW > z.min.z && pos.z - HW < z.max.z;
 
@@ -743,7 +744,8 @@ function finishRun() {
   runState = 'finished';
   const key = pbKey(), pbs = { ...loadPB() }, prev = pbs[key];
   const isPB = !prev || runTime < prev;
-  if (isPB) { pbs[key] = runTime; savePB(pbs); queueReplaySave(runTime); }
+  if (isPB) { pbs[key] = runTime; savePB(pbs); }
+  if (isPB || beatsBoardTime(modeName(), runTime)) queueReplaySave(runTime, isPB);
   const sync = run.syncTotal ? Math.round((100 * run.syncGood) / run.syncTotal) : 0;
   const perf = run.hops ? Math.round((100 * run.perfs) / run.hops) : 0;
   lastFinish = runTime;
@@ -979,9 +981,9 @@ function recordTick() {
   }
   if (rec_.pending && --rec_.pending.post <= 0) flushReplaySave();
 }
-function queueReplaySave(time) {
+function queueReplaySave(time, keep = true) {
   if (rec.startTick < 0 || noclip || runState === 'invalid') return;
-  rec.pending = { time, mode: modeName(), post: REPLAY_POSTROLL };
+  rec.pending = { time, mode: modeName(), post: REPLAY_POSTROLL, keep };
 }
 function flushReplaySave() {
   const pnd = rec.pending; if (!pnd) return;
@@ -1004,9 +1006,10 @@ function flushReplaySave() {
     startIdx: rec.startTick - rec.base, startTime: rec.startTime,
     events: rec.events.map((e) => ({ ...e, tick: e.tick - rec.base })), b64: btoa(bin),
   };
-  replayCache[pnd.mode] = decodeReplay(saved);
   submitToLeaderboard(saved, run.syncTotal ? Math.round((100 * run.syncGood) / run.syncTotal) : null);
-  setTimeout(() => { try { localStorage.setItem('bhop_brick_replay_' + pnd.mode, JSON.stringify(saved)); } catch {} syncMenu(); }, 0);
+  if (!pnd.keep) return; // only posted: this browser already has a faster run saved
+  replayCache[pnd.mode] = decodeReplay(saved);
+  setTimeout(() => { try { localStorage.setItem(REPLAY_KEY + pnd.mode, JSON.stringify(saved)); } catch {} syncMenu(); }, 0);
 }
 function decodeReplay(saved) {
   const bin = atob(saved.b64), n = saved.n, dv = new DataView(new ArrayBuffer(bin.length));
@@ -1032,7 +1035,7 @@ function decodeReplay(saved) {
 function getReplay(mode = modeName()) {
   if (replayCache[mode] !== undefined) return replayCache[mode];
   try {
-    const raw = localStorage.getItem('bhop_brick_replay_' + mode);
+    const raw = localStorage.getItem(REPLAY_KEY + mode);
     replayCache[mode] = raw ? decodeReplay(JSON.parse(raw)) : null;
   } catch { replayCache[mode] = null; }
   return replayCache[mode];
@@ -1213,6 +1216,7 @@ async function submitToLeaderboard(saved, sync, { quiet = false, retry = true } 
     if (res.ok) {
       const text = data.improved ? `Posted ${fmtTime(saved.time)} · #${data.rank}` : `Leaderboard best stays ${fmtTime(data.time)} (#${data.rank})`;
       lbStatus(text, 'good'); if (!quiet) toastLine(`Leaderboard: <b>#${data.rank}</b>`);
+      boardTime[saved.mode] = data.time;
       if (data.improved && data.rank === 1 && wrCache[saved.mode]) wrCache[saved.mode].checked = 0;
     } else if (res.status === 429 && retry) {
       lbStatus('Posting again in a few seconds…');
@@ -1226,9 +1230,16 @@ async function submitToLeaderboard(saved, sync, { quiet = false, retry = true } 
   finally { lbState.posting = false; }
 }
 
+// your time on the leaderboard per mode: a number, null when you have none, undefined until it's loaded
+const boardTime = {};
+function beatsBoardTime(mode, time) {
+  return LB_ONLINE && validName(playerName()) && boardTime[mode] !== undefined && (boardTime[mode] === null || time < boardTime[mode]);
+}
+
 // if this browser has a faster saved run than the server knows about (e.g. a PB that never got sent), send it
 const lbSynced = new Set();
 function syncLocalBest(mode, me) {
+  if (me) boardTime[mode] = me.time != null ? me.time : null;
   const r = getReplay(mode);
   if (!r || r.time < 3 || lbState.posting || lbSynced.has(mode + r.time)) return;
   if (me && me.time != null && me.time <= r.time + 1e-6) return;
