@@ -57,6 +57,8 @@
     box-shadow:0 20px 60px rgba(0,0,0,.5); backdrop-filter:blur(8px); max-height:94vh; overflow:auto; }
   .panel h1 { margin:0; font-size:26px; font-weight:600; }
   .sub { margin:4px 0 16px; color:var(--dim); font-size:13px; }
+  .map-choice { display:flex; align-items:center; gap:12px; margin:0 0 16px; color:var(--dim); font-size:13px; }
+  .map-choice select { flex:1; min-width:0; padding:9px 10px; border:1px solid #343b45; border-radius:6px; background:#15191f; color:#fff; font:inherit; }
   .row { display:flex; gap:8px; }
   .seg { display:flex; flex:1; background:#0b0d10; border-radius:6px; padding:3px; }
   .seg.icons { flex:0 0 auto; }
@@ -203,6 +205,7 @@
   <div class="panel">
     <h1>bhop_brick</h1>
     <p class="sub">Air strafe with A / D while turning your mouse.</p>
+    <label class="map-choice">Map<select id="mapChoice"><option value="bhop_brick">bhop_brick [recommended]</option><option value="kz_hub">kz_hub</option></select></label>
     <div class="row">
       <div class="seg"><button id="m_auto">Autohop</button><button id="m_scroll">Scroll</button></div>
       <div class="seg icons"><button id="t_day">Day</button><button id="t_night">Night</button></div>
@@ -285,6 +288,16 @@ const KZ_MAPS = ['kz_hub', 'kz_hub_clean'];
 const MAP_ID = KZ_MAPS.includes(new URLSearchParams(location.search).get('map')) ? new URLSearchParams(location.search).get('map') : 'bhop_brick';
 const IS_KZ = MAP_ID !== 'bhop_brick';
 const IS_EDITOR = IS_KZ && new URLSearchParams(location.search).get('editor') === '1';
+const mapChoice = $('mapChoice');
+if (MAP_ID === 'kz_hub_clean') mapChoice.add(new Option('kz_hub_clean', 'kz_hub_clean'));
+mapChoice.value = MAP_ID;
+mapChoice.addEventListener('change', () => {
+  const url = new URL(location.href);
+  if (mapChoice.value === 'bhop_brick') url.searchParams.delete('map');
+  else url.searchParams.set('map', mapChoice.value);
+  url.searchParams.delete('editor'); url.searchParams.delete('preview');
+  location.assign(url.href);
+});
 let KZMAP = null;
 if (IS_KZ) {
   try { KZMAP = await fetch(new URL(`maps/${MAP_ID}.json`, location.href)).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }); }
