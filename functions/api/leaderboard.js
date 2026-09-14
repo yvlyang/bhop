@@ -1,11 +1,13 @@
 // GET /api/leaderboard?mode=auto  → top 100 for a mode (+ your own rank if you send x-player-token)
-import { BOARD_SIZE, MODES, ensureSchema, json, noDatabase, playerIdFromToken, publicId, rankOf } from '../../lib/leaderboard.js';
+import { BOARD_SIZE, boardKey, ensureSchema, json, noDatabase, playerIdFromToken, publicId, rankOf } from '../../lib/leaderboard.js';
 
 export async function onRequestGet({ request, env }) {
   const db = env.DB;
   if (!db) return noDatabase();
-  const mode = new URL(request.url).searchParams.get('mode');
-  if (!MODES.includes(mode)) return json({ error: 'mode must be auto or scroll' }, 400);
+  const params = new URL(request.url).searchParams;
+  const map = params.get('map') ?? 'bhop_brick', requestedMode = params.get('mode');
+  const mode = boardKey(map, requestedMode);
+  if (!mode) return json({ error: 'unknown map or mode' }, 400);
   await ensureSchema(db);
 
   const { results } = await db
@@ -30,7 +32,7 @@ export async function onRequestGet({ request, env }) {
   }
 
   return json({
-    mode,
+    map, mode: requestedMode,
     rows: results.map((r, i) => ({
       rank: i + 1, id: publicId(r.player_id), name: r.name, time: r.time,
       jumps: r.jumps, perf: r.perf, sync: r.sync, date: r.created_at, replay: !!r.has_replay, runs: r.runs,

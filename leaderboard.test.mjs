@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { ensureSchema, claimName, cleanName } from './lib/leaderboard.js';
+import { ensureSchema, claimName, cleanName, boardKey, validateRun } from './lib/leaderboard.js';
+import { onRequestGet as leaderboard } from './functions/api/leaderboard.js';
+import { onRequestGet as replay } from './functions/api/replay.js';
+import { onRequestPost as finish } from './functions/api/finish.js';
+import { onRequestPost as submit } from './functions/api/runs.js';
+import map from './maps/kz_hub_clean.json' with { type: 'json' };
 import { onRequestPost } from './functions/api/name.js';
 const sqlite = new DatabaseSync(':memory:');
 const db = { prepare(sql) { return { values: [], bind(...v) { this.values=v; return this; }, async run() { return sqlite.prepare(sql).run(...this.values); }, async first() { return sqlite.prepare(sql).get(...this.values); }, sql }; }, async batch(stmts) { sqlite.exec('BEGIN'); try { for (const s of stmts) sqlite.prepare(s.sql).run(...s.values); sqlite.exec('COMMIT'); } catch(e) { sqlite.exec('ROLLBACK'); throw e; } } };
@@ -24,3 +29,53 @@ assert.equal((await onRequestPost({request:request(tokenB,' freshname '),env:{DB
 assert.equal((await onRequestPost({request:request(tokenA,'FRESHNAME'),env:{DB:db}})).status,200);
 assert.equal((await onRequestPost({request:request(tokenA,'!'),env:{DB:db}})).status,400);
 console.log('Passed: case-insensitive ownership, retained names, both modes, insert/update guards, and rename API.');
+const prepare = db.prepare;
+db.prepare = function(sql) {
+  const stmt = prepare.call(this, sql);
+  stmt.all = async () => ({ results: sqlite.prepare(sql).all(...stmt.values) });
+  return stmt;
+};
+assert.equal(boardKey(undefined, 'scroll'), 'scroll');
+assert.equal(boardKey('kz_hub_clean', 'scroll'), 'kz_hub_clean:scroll');
+assert.equal(boardKey('kz_hub_clean', 'auto'), null);
+assert.equal(boardKey('unknown', 'scroll'), null);
+insert.run('alice', 'kz_hub_clean:scroll', 'Alice', 40);
+const get = async (handler, query) => handler({ request: new Request('https://example.com/api/test?' + query), env: { DB: db } });
+let response = await get(leaderboard, 'map=kz_hub_clean&mode=scroll');
+assert.equal(response.status, 200);
+assert.deepEqual((await response.json()).rows.map(r => r.time), [40]);
+assert.deepEqual((await (await get(leaderboard, 'mode=scroll')).json()).rows.map(r => r.time), [30]);
+assert.equal((await get(leaderboard, 'map=kz_hub_clean&mode=auto')).status, 400);
+const post = (handler, body) => handler({ request: new Request('https://example.com/api/test', { method: 'POST', body: JSON.stringify(body) }), env: { DB: db } });
+await post(finish, { token: tokenA, map: 'kz_hub_clean', mode: 'scroll', time: 40 });
+assert.equal((await (await get(leaderboard, 'map=kz_hub_clean&mode=scroll')).json()).totalRuns, 1);
+assert.equal((await (await get(leaderboard, 'mode=scroll')).json()).totalRuns, 0);
+const center = action => {
+  const box = map.triggers.find(t => t.actions.some(a => a[0] === action)).box;
+  return [(box[0][0] + box[1][0]) / 2, box[0][2] + 1, -(box[0][1] + box[1][1]) / 2];
+};
+const start = center('start'), end = center('end'), endBox = map.triggers.find(t => t.actions.some(a => a[0] === 'end')).box;
+const bytes = Buffer.alloc(601 * 14), origin = [-2300, 0, 1900];
+let finishTick;
+for (let i = 0; i <= 600; i++) {
+  const p = start.map((v, k) => v + (end[k] - v) * i / 600);
+  p.forEach((v, k) => bytes.writeInt16BE(Math.round((v - origin[k]) * 8), i * 14 + k * 2));
+  bytes.writeUInt16BE(i ? 4000 : 0, i * 14 + 11);
+  if (!finishTick && p[0] + 16 > endBox[0][0] && p[0] - 16 < endBox[1][0] && p[2] + 16 > -endBox[1][1] && p[2] - 16 < -endBox[0][1] && p[1] + 72 > endBox[0][2] - 2 && p[1] < endBox[1][2] + 66) finishTick = i;
+}
+const time = (finishTick - 1) * .01;
+const run = { map: 'kz_hub_clean', mode: 'scroll', time, replay: { v: 1, map: 'kz_hub_clean', mode: 'scroll', time, n: 601, startIdx: 1, startTime: 0, events: [], b64: bytes.toString('base64') } };
+assert.equal(validateRun(run).ok, true);
+assert.equal(validateRun({ ...run, map: 'bhop_brick' }).ok, false);
+assert.equal(validateRun({ ...run, time: time + 1, replay: { ...run.replay, time: time + 1 } }).ok, false);
+const bad = Buffer.from(bytes);
+bad.writeInt16BE(30000, 14 * 100);
+assert.equal(validateRun({ ...run, replay: { ...run.replay, b64: bad.toString('base64') } }).ok, false);
+response = await post(submit, { ...run, token: tokenA, name: 'FRESHNAME' });
+assert.equal(response.status, 200, await response.text());
+const rows = (await (await get(leaderboard, 'map=kz_hub_clean&mode=scroll')).json()).rows;
+const saved = rows.find(r => r.name === 'FRESHNAME');
+assert.ok(saved?.replay);
+assert.equal((await get(replay, `map=kz_hub_clean&mode=scroll&id=${saved.id}`)).status, 200);
+assert.equal((await get(replay, `mode=scroll&id=${saved.id}`)).status, 404);
+console.log('Passed: map isolation, Scroll-only KZ, finish counts, replay validation, submission and replay lookup.');

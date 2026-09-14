@@ -1,12 +1,12 @@
 // GET /api/replay?mode=auto&id=<public id>  → a top-10 replay
-import { MODES, ensureSchema, json, noDatabase } from '../../lib/leaderboard.js';
+import { boardKey, ensureSchema, json, noDatabase } from '../../lib/leaderboard.js';
 
 export async function onRequestGet({ request, env }) {
   const db = env.DB;
   if (!db) return noDatabase();
   const params = new URL(request.url).searchParams;
-  const mode = params.get('mode'), id = params.get('id') || '';
-  if (!MODES.includes(mode) || !/^[a-f0-9]{16}$/.test(id)) return json({ error: 'bad mode or id' }, 400);
+  const mode = boardKey(params.get('map') ?? 'bhop_brick', params.get('mode')), id = params.get('id') || '';
+  if (!mode || !/^[a-f0-9]{16}$/.test(id)) return json({ error: 'bad map, mode or id' }, 400);
   await ensureSchema(db);
 
   const row = await db

@@ -1,6 +1,6 @@
 // POST /api/runs  → submit a finished run with its replay; keeps each player's best per mode
 import {
-  MODES, REPLAY_SLOTS, claimName, cleanName, ensureSchema, json, noDatabase, playerIdFromToken, rankOf, validateRun,
+  boardKey, REPLAY_SLOTS, claimName, cleanName, ensureSchema, json, noDatabase, playerIdFromToken, rankOf, validateRun,
 } from '../../lib/leaderboard.js';
 
 const MAX_BODY = 2_000_000; // a 10-minute replay is ~1.2 MB of JSON
@@ -21,7 +21,8 @@ async function submitRun({ request, env }) {
   if (!name) return json({ error: 'name must be 2-16 letters, numbers, spaces, _ . or -' }, 400);
   const playerId = await playerIdFromToken(body.token);
   if (!playerId) return json({ error: 'missing player token' }, 400);
-  if (!MODES.includes(body.mode)) return json({ error: 'mode must be auto or scroll' }, 400);
+  const mode = boardKey(body.map, body.mode);
+  if (!mode) return json({ error: 'unknown map or mode' }, 400);
 
   const check = validateRun(body);
   if (!check.ok) return json({ error: `run rejected: ${check.error}` }, 422);
@@ -31,7 +32,7 @@ async function submitRun({ request, env }) {
     return json({ error: 'That name belongs to another player. Choose a different name.' }, 409);
   }
   const now = Date.now();
-  const existing = await db.prepare('SELECT time, created_at, updated_at FROM runs WHERE player_id = ?1 AND mode = ?2').bind(playerId, body.mode).first();
+  const existing = await db.prepare('SELECT time, created_at, updated_at FROM runs WHERE player_id = ?1 AND mode = ?2').bind(playerId, mode).first();
   const improved = !existing || body.time < existing.time;
   if (improved && existing && now - existing.updated_at < 5000) return json({ error: 'too many submissions, try again in a few seconds' }, 429);
 
@@ -42,18 +43,18 @@ async function submitRun({ request, env }) {
                 ON CONFLICT (player_id, mode) DO UPDATE SET
                   name = excluded.name, time = excluded.time, jumps = excluded.jumps, perf = excluded.perf, sync = excluded.sync,
                   replay = excluded.replay, created_at = excluded.created_at, updated_at = excluded.updated_at`)
-      .bind(playerId, body.mode, name, body.time, check.jumps, check.perf, check.sync, JSON.stringify(body.replay), now)
+      .bind(playerId, mode, name, body.time, check.jumps, check.perf, check.sync, JSON.stringify(body.replay), now)
       .run();
     // only the top 10 keep their replay
     await db
       .prepare(`UPDATE runs SET replay = NULL WHERE mode = ?1 AND replay IS NOT NULL AND player_id NOT IN
                 (SELECT player_id FROM runs WHERE mode = ?1 ORDER BY time ASC, created_at ASC LIMIT ?2)`)
-      .bind(body.mode, REPLAY_SLOTS)
+      .bind(mode, REPLAY_SLOTS)
       .run();
   } else {
-    await db.prepare('UPDATE runs SET name = ?1 WHERE player_id = ?2 AND mode = ?3').bind(name, playerId, body.mode).run();
+    await db.prepare('UPDATE runs SET name = ?1 WHERE player_id = ?2 AND mode = ?3').bind(name, playerId, mode).run();
   }
 
   const best = improved ? { time: body.time, created_at: now } : existing;
-  return json({ ok: true, improved, time: best.time, rank: await rankOf(db, body.mode, best.time, best.created_at) });
+  return json({ ok: true, improved, time: best.time, rank: await rankOf(db, mode, best.time, best.created_at) });
 }

@@ -1537,7 +1537,7 @@ function flushReplaySave() {
   const bytes = new Uint8Array(buf); let bin = '';
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
   const saved = {
-    v: 1, mode: pnd.mode, time: pnd.time, date: Date.now(), n,
+    v: 1, map: MAP_ID, mode: pnd.mode, time: pnd.time, date: Date.now(), n,
     startIdx: rec.startTick - rec.base, startTime: rec.startTime,
     events: rec.events.map((e) => ({ ...e, tick: e.tick - rec.base })), b64: btoa(bin),
   };
@@ -1724,9 +1724,13 @@ function replayKey(e) {
    Only available when the game is served from a website, not opened as a local file.
    ===================================================================== */
 const ON_PAGES_DEV = location.hostname === 'bhop-ct6.pages.dev'; // the game's home is yvlyang.com/bhop/
-const LB_ONLINE = location.protocol.startsWith('http') && !IS_KZ; // the leaderboard is bhop_brick only
+const LB_ONLINE = location.protocol.startsWith('http') && !IS_EDITOR && (!IS_KZ || MAP_ID === 'kz_hub_clean');
 // relative to the game, so it works at yvlyang.com/bhop/ (proxied) and at the game's own pages.dev address
-const apiUrl = (path) => new URL('api/' + path, location.origin + location.pathname.replace(/[^/]*$/, '')).href;
+const apiUrl = (path) => {
+  const url = new URL('api/' + path, location.origin + location.pathname.replace(/[^/]*$/, ''));
+  url.searchParams.set('map', MAP_ID);
+  return url.href;
+};
 const lbState = { mode: modeName(), pending: null, rows: [] };
 const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
@@ -1750,12 +1754,12 @@ function toastLine(html) { // add a line under the finish toast (or show on its 
 
 function countFinishedRun(mode, time) {
   if (!LB_ONLINE || time < 3) return;
-  fetch(apiUrl('finish'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: playerToken(), mode, time }), keepalive: true })
+  fetch(apiUrl('finish'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: playerToken(), map: MAP_ID, mode, time }), keepalive: true })
     .then(() => { if (!menu.hidden) loadLeaderboard(); }).catch(() => {});
 }
 
 function lbStatus(text, kind = '') { const el = $('lbStatus'); el.textContent = text; el.className = 'lb-status' + (kind ? ' ' + kind : ''); }
-const rawReplay = (r) => ({ v: r.v, mode: r.mode, time: r.time, date: r.date, n: r.n, startIdx: r.startIdx, startTime: r.startTime, events: r.events, b64: r.b64 });
+const rawReplay = (r) => ({ v: r.v, map: r.map || MAP_ID, mode: r.mode, time: r.time, date: r.date, n: r.n, startIdx: r.startIdx, startTime: r.startTime, events: r.events, b64: r.b64 });
 
 async function submitToLeaderboard(saved, sync, { quiet = false, retry = true } = {}) {
   if (!LB_ONLINE || saved.time < 3) return;
@@ -1765,7 +1769,7 @@ async function submitToLeaderboard(saved, sync, { quiet = false, retry = true } 
   lbStatus(`Posting ${saved.mode === 'auto' ? 'Autohop' : 'Scroll'} ${fmtTime(saved.time)}…`);
   lbState.posting = true;
   try {
-    const body = JSON.stringify({ name: playerName().trim(), token: playerToken(), mode: saved.mode, time: saved.time, sync, replay: saved });
+    const body = JSON.stringify({ name: playerName().trim(), token: playerToken(), map: MAP_ID, mode: saved.mode, time: saved.time, sync, replay: saved });
     const res = await fetch(apiUrl('runs'), { method: 'POST', headers: { 'content-type': 'application/json' }, keepalive: body.length < 60000, body });
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
@@ -1824,6 +1828,8 @@ async function loadWorldRecord(mode, c) {
 
 async function loadLeaderboard() {
   const list = $('lbList'), me = $('lbMe'), mode = lbState.mode;
+  $('lb_auto').hidden = IS_KZ;
+  $('lb_auto').disabled = IS_KZ;
   $('lb_auto').classList.toggle('sel', mode === 'auto'); $('lb_scroll').classList.toggle('sel', mode === 'scroll');
   if (!list.innerHTML) list.innerHTML = '<div class="lb-empty">Loading…</div>';
   try {
@@ -1876,7 +1882,7 @@ function showLeaderboard() {
 if (LB_ONLINE) {
   $('lb').hidden = false;
   setTimeout(async () => {
-    await Promise.allSettled(['auto', 'scroll'].map(async (m) => {
+    await Promise.allSettled((IS_KZ ? ['scroll'] : ['auto', 'scroll']).map(async (m) => {
       const res = await fetch(apiUrl(`leaderboard?mode=${m}`), { headers: { 'x-player-token': playerToken() } });
       const data = await res.json();
       if (res.ok) await syncLocalBest(m, data.me);
