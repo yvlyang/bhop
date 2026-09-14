@@ -723,7 +723,7 @@ function solidAt(set, x, y, z, h) {
 }
 
 const PART_MATERIAL = { crateA: 'crate', crateB: 'crate', wall: 'wall', stripe: 'stripe', floor: 'floor', ledge: 'ledge', roof: 'roof',
-  steel: 'steel', ladder: 'steel', wood: 'wood', grate: 'grate', fence: 'glass', start: 'neon', finish: 'neon' };
+  steel: 'steel', ladder: 'steel', wood: 'wood', grate: 'grate', fence: 'glass', start: 'neon', finish: 'neon', lamp: 'neon' };
 function partTexture(kind) {
   const S = 256, [c, g] = cnv(S, S), r = rng({ crate: 21, wall: 22, floor: 23, ledge: 24, roof: 25, steel: 26, wood: 27, grate: 28 }[kind]);
   const L = new Float32Array(S * S).fill(1);
@@ -852,6 +852,11 @@ function buildParts(parts) {
       continue;
     }
     addHex(group(kind), P.v, P.color, kind === 'neon');
+    if (P.role === 'lamp') {
+      const c = [0, 1, 2].map((a) => P.v.reduce((t, q) => t + q[a], 0) / 8);
+      const light = new THREE.PointLight(0xffe7a8, 2.4, 300, 0);
+      light.position.set(c[0], c[1] - 10, c[2]); scene.add(light);
+    }
   }
   const std = (map, roughness, metalness = 0) => new THREE.MeshStandardMaterial({ map, vertexColors: true, roughness, metalness });
   const mats = {
