@@ -1136,7 +1136,7 @@ function wish() {
 
 // KZ maps only: crouching (C), ladders and staying on slopes
 function handleDuck(dt) {
-  const want = !!keys.KeyC, fits = (y, h) => !solidAt(brushSet, pos.x, y, pos.z, h);
+  const want = !!(keys.KeyC || keys.ControlLeft || keys.ControlRight), fits = (y, h) => !solidAt(brushSet, pos.x, y, pos.z, h);
   if (want && !ducked) {
     if (!ground && fits(pos.y + 18, 54)) { pos.y += 18; prevPos.y += 18; viewOff -= 18; prevViewOff -= 18; } // in the air: pull the feet up
     ducked = true; hullH = 54;
@@ -2096,7 +2096,7 @@ addEventListener('keydown', (e) => {
   if (e.code === 'Backquote') { e.preventDefault(); toggleConsole(); return; }
   if (watching && !consoleOpen) { replayKey(e); return; }
   if (consoleOpen || !playing) return;
-  if (e.code === 'Space' || e.code === 'Tab') e.preventDefault();
+  if (e.code === 'Space' || e.code === 'Tab' || e.code === 'ControlLeft' || e.code === 'ControlRight') e.preventDefault();
   keys[e.code] = true;
   if (e.repeat) return;
   if (e.code === 'KeyR') restart();
@@ -2497,7 +2497,7 @@ renderer.shadowMap.needsUpdate = true;
 if (IS_KZ) {
   document.title = MAP_ID;
   document.querySelector('.panel h1').textContent = MAP_ID;
-  document.querySelector('.keys').innerHTML = 'WASD move · Space jump · C crouch · W into a ladder to climb · Shift walk<br>R restart · T back to checkpoint · N day / night · Esc menu · ` console';
+  document.querySelector('.keys').innerHTML = 'WASD move · Space jump · C / Ctrl crouch · W into a ladder to climb · Shift walk<br>R restart · T back to checkpoint · N day / night · Esc menu · ` console';
   document.querySelector('.credit').insertAdjacentHTML('afterbegin', `Layout: CSGOHUB KZ by Darnias &amp; lmtlss, CS2 port by DEAFPS · `);
 }
 syncMenu();
