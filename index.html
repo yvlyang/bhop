@@ -280,6 +280,16 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const $ = (id) => document.getElementById(id);
 const DEG = Math.PI / 180;
+// ?map=kz_hub or ?map=kz_hub_clean plays a KZ map; anything else is bhop_brick
+const KZ_MAPS = ['kz_hub', 'kz_hub_clean'];
+const MAP_ID = KZ_MAPS.includes(new URLSearchParams(location.search).get('map')) ? new URLSearchParams(location.search).get('map') : 'bhop_brick';
+const IS_KZ = MAP_ID !== 'bhop_brick';
+const IS_EDITOR = IS_KZ && new URLSearchParams(location.search).get('editor') === '1';
+let KZMAP = null;
+if (IS_KZ) {
+  try { KZMAP = await fetch(new URL(`maps/${MAP_ID}.json`, location.href)).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }); }
+  catch (e) { showFatal(`Could not load ${MAP_ID}: ${e.message}`); throw e; }
+}
 
 /* =====================================================================
    MAP DATA — extracted from bhop_brick_roblox.bsp (Source units, Z-up)
@@ -298,6 +308,8 @@ const PHYS = {
   sv_gravity: 800, sv_maxspeed: 250, sv_air_max_wishspeed: 30, sv_jump_impulse: 301.993377,
   sv_maxvelocity: 3500, sv_enablebunnyhopping: 1,
 };
+// KZ maps use the CS2KZ KZ-mode settings from the map's kz_settings.cfg (the knife still caps run speed at 250)
+if (IS_KZ) Object.assign(PHYS, { sv_airaccelerate: 100, sv_accelerate: 6.5, sv_friction: 5, sv_stopspeed: 80, sv_maxvelocity: 2000 });
 const DEFAULTS = {
   sv_autobunnyhopping: 1, sensitivity: 1.5, m_yaw: 0.022, m_pitch: 0.022, fov: 90,
   volume: 0.5,
@@ -511,7 +523,7 @@ function addMeshes(target, parent) {
   });
 }
 const worldGeo = newGeo();
-for (const b of MAP.boxes) {
+if (!IS_KZ) for (const b of MAP.boxes) {
   const [x0, y0, z0, x1, y1, z1] = b; // source
   const min = { x: x0, y: z0, z: -y1 }, max = { x: x1, y: z1, z: -y0 }; // three
   const faces = b.slice(6);
@@ -527,11 +539,11 @@ for (const b of MAP.boxes) {
 addMeshes(worldGeo, scene);
 
 // trigger_teleports (floor) with their info_teleport_destination
-const teleports = MAP.teleports.map((t) => ({
+const teleports = IS_KZ ? [] : MAP.teleports.map((t) => ({
   min: { x: t.min[0], y: t.min[2], z: -t.max[1] }, max: { x: t.max[0], y: t.max[2], z: -t.min[1] },
   dest: { pos: srcToThree(...t.dest.o), yaw: -t.dest.yaw * DEG },
 }));
-const spawn = { pos: srcToThree(...MAP.spawn.o), yaw: -MAP.spawn.yaw * DEG };
+const spawn = IS_KZ ? { pos: srcToThree(...KZMAP.spawn.pos), yaw: -KZMAP.spawn.yaw * DEG } : { pos: srcToThree(...MAP.spawn.o), yaw: -MAP.spawn.yaw * DEG };
 const destNear = (sx, sy) => teleports.map((t) => t.dest).find((d) => Math.hypot(d.pos[0] - sx, d.pos[2] + sy) < 5);
 
 // checkpoint platforms in route order (Source XY bounds), matched to the map's teleport destinations
@@ -549,8 +561,8 @@ const onCheckpoint = (i) => { const [x0, y0, x1, y1] = CHECKPOINTS[i].box, sy = 
 const zoneBox = (x0, y0, x1, y1) => ({ min: { x: x0, y: 129, z: -y1 }, max: { x: x1, y: 129 + 256, z: -y0 } });
 const [startLine, endLine] = MAP.lines;
 // fitted to the corridor's inner wall faces (walls: start x 122..479, end x -616..-264)
-const startZone = zoneBox(122, startLine.max[1], 479, 2112);
-const endZone = zoneBox(-616, -2458, -264, endLine.min[1]);
+let startZone = zoneBox(122, startLine.max[1], 479, 2112);
+let endZone = zoneBox(-616, -2458, -264, endLine.min[1]);
 
 function zoneTexture() {
   const [c, g] = cnv(8, 128), grd = g.createLinearGradient(0, 128, 0, 0);
@@ -569,11 +581,10 @@ function drawZone(z, color) {
   group.position.set((z.min.x + z.max.x) / 2, z.min.y, (z.min.z + z.max.z) / 2);
   scene.add(group);
 }
-drawZone(startZone, 0x3dff6a);
-drawZone(endZone, 0xff4040);
+if (!IS_KZ) { drawZone(startZone, 0x3dff6a); drawZone(endZone, 0xff4040); }
 // the map's own start/end line brushes (func_brush)
 // (stretched wall-to-wall so they line up with the zone boxes)
-for (const [l, z, color] of [[startLine, startZone, 0x22ff22], [endLine, endZone, 0xff2222]]) {
+if (!IS_KZ) for (const [l, z, color] of [[startLine, startZone, 0x22ff22], [endLine, endZone, 0xff2222]]) {
   const w = z.max.x - z.min.x, d = l.max[1] - l.min[1];
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, 1, d), new THREE.MeshBasicMaterial({ color }));
   m.position.set((z.min.x + z.max.x) / 2, 129.6, -(l.min[1] + d / 2)); scene.add(m);
@@ -591,11 +602,383 @@ Object.assign(sun.shadow.camera, { left: -760, right: 760, top: 2460, bottom: -2
 sun.shadow.bias = -0.0003; sun.shadow.normalBias = 1.2;
 
 /* =====================================================================
+   BRUSH COLLISION (KZ maps) — every solid is a convex brush: its faces, axial bevels and
+   edge-by-axis bevels, pushed out by the player box and clipped like Source's CM_ClipBoxToBrush
+   ===================================================================== */
+const BRUSH_CELL = 192;
+let brushSet = null, ladderSet = null;
+function convexBrush(verts, faces) {
+  const planes = [], min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  for (const v of verts) for (let a = 0; a < 3; a++) { min[a] = Math.min(min[a], v[a]); max[a] = Math.max(max[a], v[a]); }
+  const addPlane = (nx, ny, nz) => { // supporting plane: pushed to the furthest vertex, so bevels never cut the shape
+    const len = Math.hypot(nx, ny, nz); if (len < 1e-6) return;
+    nx /= len; ny /= len; nz /= len;
+    for (let i = 0; i < planes.length; i += 4) if (Math.abs(planes[i] - nx) < 1e-4 && Math.abs(planes[i + 1] - ny) < 1e-4 && Math.abs(planes[i + 2] - nz) < 1e-4) return;
+    let d = -Infinity; for (const v of verts) d = Math.max(d, v[0] * nx + v[1] * ny + v[2] * nz);
+    planes.push(nx, ny, nz, d);
+  };
+  const edges = [];
+  if (faces) {
+    const c = [0, 1, 2].map((a) => (min[a] + max[a]) / 2);
+    for (const f of faces) {
+      let nx = 0, ny = 0, nz = 0, fx = 0, fy = 0, fz = 0;
+      for (let i = 0; i < f.length; i++) { // Newell normal
+        const p = verts[f[i]], q = verts[f[(i + 1) % f.length]];
+        nx += (p[1] - q[1]) * (p[2] + q[2]); ny += (p[2] - q[2]) * (p[0] + q[0]); nz += (p[0] - q[0]) * (p[1] + q[1]);
+        fx += p[0]; fy += p[1]; fz += p[2]; edges.push([p, q]);
+      }
+      const s = nx * (fx / f.length - c[0]) + ny * (fy / f.length - c[1]) + nz * (fz / f.length - c[2]) < 0 ? -1 : 1;
+      addPlane(nx * s, ny * s, nz * s);
+    }
+  } else { // flat triangle: both sides plus its edges
+    const [a, b, c] = verts;
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    if (Math.hypot(nx, ny, nz) < 1e-3) return null;
+    addPlane(nx, ny, nz); addPlane(-nx, -ny, -nz);
+    for (const [p, q] of [[a, b], [b, c], [c, a]]) {
+      edges.push([p, q]);
+      const ex = q[0] - p[0], ey = q[1] - p[1], ez = q[2] - p[2];
+      addPlane(ey * nz - ez * ny, ez * nx - ex * nz, ex * ny - ey * nx); addPlane(-(ey * nz - ez * ny), -(ez * nx - ex * nz), -(ex * ny - ey * nx));
+    }
+  }
+  for (const [x, y, z] of [[1, 0, 0], [0, 1, 0], [0, 0, 1]]) { addPlane(x, y, z); addPlane(-x, -y, -z); }
+  for (const [p, q] of edges) {
+    const ex = q[0] - p[0], ey = q[1] - p[1], ez = q[2] - p[2];
+    for (const [x, y, z] of [[1, 0, 0], [0, 1, 0], [0, 0, 1]]) {
+      const cx = ey * z - ez * y, cy = ez * x - ex * z, cz = ex * y - ey * x;
+      addPlane(cx, cy, cz); addPlane(-cx, -cy, -cz);
+    }
+  }
+  return { planes: new Float64Array(planes), min, max, kind: 'world' };
+}
+function makeBrushSet(list) {
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (const b of list) for (let a = 0; a < 3; a++) { lo[a] = Math.min(lo[a], b.min[a]); hi[a] = Math.max(hi[a], b.max[a]); }
+  const n = [0, 1, 2].map((a) => Math.max(1, Math.ceil((hi[a] - lo[a]) / BRUSH_CELL) + 1));
+  const cells = Array.from({ length: n[0] * n[1] * n[2] }, () => []);
+  list.forEach((b, i) => {
+    const c0 = [0, 1, 2].map((a) => Math.floor((b.min[a] - lo[a]) / BRUSH_CELL)), c1 = [0, 1, 2].map((a) => Math.floor((b.max[a] - lo[a]) / BRUSH_CELL));
+    for (let x = c0[0]; x <= c1[0]; x++) for (let y = c0[1]; y <= c1[1]; y++) for (let z = c0[2]; z <= c1[2]; z++) cells[(x * n[1] + y) * n[2] + z].push(i);
+  });
+  return { list, lo, n, cells, stamp: new Uint32Array(list.length), mark: 0, found: [] };
+}
+function brushesNear(set, x0, y0, z0, x1, y1, z1) {
+  const { lo, n, cells, stamp, found } = set;
+  found.length = 0; if (++set.mark === 0xffffffff) { stamp.fill(0); set.mark = 1; }
+  const cl = (v, a) => Math.min(n[a] - 1, Math.max(0, Math.floor((v - lo[a]) / BRUSH_CELL)));
+  const ax = cl(x0, 0), bx = cl(x1, 0), ay = cl(y0, 1), by = cl(y1, 1), az = cl(z0, 2), bz = cl(z1, 2);
+  for (let x = ax; x <= bx; x++) for (let y = ay; y <= by; y++) for (let z = az; z <= bz; z++) {
+    for (const i of cells[(x * n[1] + y) * n[2] + z]) if (stamp[i] !== set.mark) { stamp[i] = set.mark; found.push(i); }
+  }
+  return found;
+}
+const DIST_EPS = 0.03125;
+function traceSet(set, sx, sy, sz, dx, dy, dz, h) {
+  const ex = sx + dx, ey = sy + dy, ez = sz + dz;
+  const x0 = Math.min(sx, ex) - HW - 1, x1 = Math.max(sx, ex) + HW + 1, y0 = Math.min(sy, ey) - 1, y1 = Math.max(sy, ey) + h + 1, z0 = Math.min(sz, ez) - HW - 1, z1 = Math.max(sz, ez) + HW + 1;
+  let best = 1, hit = null, hnx = 0, hny = 0, hnz = 0;
+  TR.startsolid = false;
+  for (const i of brushesNear(set, x0, y0, z0, x1, y1, z1)) {
+    const b = set.list[i];
+    if (b.max[0] < x0 || b.min[0] > x1 || b.max[1] < y0 || b.min[1] > y1 || b.max[2] < z0 || b.min[2] > z1) continue;
+    const P = b.planes;
+    let enter = -1, leave = 1, startout = false, clip = -1, miss = false, inner = -Infinity, innerPlane = -1;
+    for (let k = 0; k < P.length; k += 4) {
+      const nx = P[k], ny = P[k + 1], nz = P[k + 2];
+      const dist = P[k + 3] + HW * (Math.abs(nx) + Math.abs(nz)) + (ny < 0 ? -ny * h : 0); // plane pushed out by the player box
+      const d1 = sx * nx + sy * ny + sz * nz - dist, d2 = ex * nx + ey * ny + ez * nz - dist;
+      if (d1 > 0) startout = true;
+      if (d1 > 0 && (d2 >= DIST_EPS || d2 >= d1 - 1e-6)) { miss = true; break; } // sliding along a face (within rounding) never re-hits it
+      if (d1 > inner) { inner = d1; innerPlane = k; }
+      if (d1 <= 0 && d2 <= 0) continue;
+      if (d1 > d2) { let f = (d1 - DIST_EPS) / (d1 - d2); if (f < 0) f = 0; if (f > enter) { enter = f; clip = k; } }
+      else { let f = (d1 + DIST_EPS) / (d1 - d2); if (f > 1) f = 1; if (f < leave) leave = f; }
+    }
+    if (miss) continue;
+    if (!startout) { // started inside: block only a shallow overlap moving further in, so the player can always get out
+      TR.startsolid = true;
+      const k = innerPlane;
+      if (inner < -0.5 || dx * P[k] + dy * P[k + 1] + dz * P[k + 2] >= 0) continue;
+      if (0 < best || !hit) { best = 0; hit = b; hnx = P[k]; hny = P[k + 1]; hnz = P[k + 2]; }
+      continue;
+    }
+    if (enter < leave && enter > -1 && enter < best) { best = Math.max(0, enter); hit = b; hnx = P[clip]; hny = P[clip + 1]; hnz = P[clip + 2]; }
+  }
+  TR.fraction = best; TR.hit = hit; TR.nx = hnx; TR.ny = hny; TR.nz = hnz;
+  TR.ex = sx + dx * best; TR.ey = sy + dy * best; TR.ez = sz + dz * best;
+  return TR;
+}
+function solidAt(set, x, y, z, h) {
+  for (const i of brushesNear(set, x - HW, y, z - HW, x + HW, y + h, z + HW)) {
+    const P = set.list[i].planes;
+    let inside = true;
+    for (let k = 0; k < P.length; k += 4) {
+      const dist = P[k + 3] + HW * (Math.abs(P[k]) + Math.abs(P[k + 2])) + (P[k + 1] < 0 ? -P[k + 1] * h : 0);
+      if (x * P[k] + y * P[k + 1] + z * P[k + 2] - dist > -0.01) { inside = false; break; }
+    }
+    if (inside) return true;
+  }
+  return false;
+}
+
+const PART_MATERIAL = { crateA: 'crate', crateB: 'crate', wall: 'wall', stripe: 'stripe', floor: 'floor', ledge: 'ledge', roof: 'roof',
+  steel: 'steel', ladder: 'steel', wood: 'wood', grate: 'grate', fence: 'glass', start: 'neon', finish: 'neon', lamp: 'neon' };
+function partTexture(kind) {
+  const S = 256, [c, g] = cnv(S, S), r = rng({ crate: 21, wall: 22, floor: 23, ledge: 24, roof: 25, steel: 26, wood: 27, grate: 28 }[kind]);
+  const L = new Float32Array(S * S).fill(1);
+  const lattice = (period) => { const a = new Float32Array(period * period); for (let i = 0; i < a.length; i++) a[i] = r(); return a; };
+  const vnoise = (lat, period, x, y) => {
+    const fx = (x / S) * period, fy = (y / S) * period, ix = Math.floor(fx), iy = Math.floor(fy), tx = fx - ix, ty = fy - iy;
+    const at = (i, j) => lat[((j % period) + period) % period * period + ((i % period) + period) % period];
+    const sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
+    return (at(ix, iy) * (1 - sx) + at(ix + 1, iy) * sx) * (1 - sy) + (at(ix, iy + 1) * (1 - sx) + at(ix + 1, iy + 1) * sx) * sy;
+  };
+  const band = (d, w) => Math.max(0, 1 - Math.abs(d) / w);
+  if (kind === 'crate') {
+    const n = lattice(16);
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const rx = ((x % 32) + 32) % 32;
+      L[y * S + x] = 0.86 + 0.08 * vnoise(n, 16, x, y) - 0.22 * band(rx - 2, 2.5) + 0.1 * band(rx - 6, 2) - 0.3 * band((y % 256) - 1, 1.5);
+    }
+  } else if (kind === 'wall') {
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) L[y * S + x] = 0.84 + 0.16 * (0.5 + 0.5 * Math.cos((2 * Math.PI * x) / 16));
+  } else if (kind === 'floor') {
+    for (let i = 0; i < S * S; i++) L[i] = 0.62 + 0.38 * r() - (r() < 0.02 ? 0.35 : 0);
+  } else if (kind === 'ledge') {
+    const a = lattice(4), b = lattice(8), d = lattice(32);
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) L[y * S + x] = 0.35 + 0.35 * vnoise(a, 4, x, y) + 0.2 * vnoise(b, 8, x, y) + 0.1 * vnoise(d, 32, x, y);
+  } else if (kind === 'roof') {
+    const tone = lattice(8);
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const row = Math.floor(y / 64), xo = (x + (row % 2) * 64) % S, col = Math.floor(xo / 128);
+      L[y * S + x] = 0.78 + 0.18 * tone[(row % 4) * 8 + (col % 2)] - 0.55 * Math.max(band((y % 64) - 1, 1.5), band((xo % 128) - 1, 1.5));
+    }
+  } else if (kind === 'steel') {
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      let v = 0.7;
+      for (const [cx0, cy0, dir] of [[8, 8, 1], [24, 24, -1], [8 + 32, 8, 1], [24 - 32, 24, -1], [8, 8 + 32, 1], [24, 24 - 32, -1]]) {
+        const dx = ((x - cx0) % 32 + 48) % 32 - 16, dy = ((y - cy0) % 32 + 48) % 32 - 16;
+        const u = (dx + dir * dy) / Math.SQRT2, w = (dx - dir * dy) / Math.SQRT2;
+        const inside = Math.abs(u) / 7 + Math.abs(w) / 2.2;
+        if (inside < 1) { v = 0.95 + 0.25 * (w / 2.2) * dir - 0.1 * inside; break; }
+      }
+      L[y * S + x] = v;
+    }
+  } else if (kind === 'wood') {
+    const grain = lattice(64), tone = lattice(4);
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const row = Math.floor(y / 64), xo = (x + row * 96) % S;
+      const g1 = vnoise(grain, 64, xo * 0.25, y * 4);
+      L[y * S + x] = 0.7 + 0.15 * tone[row % 4] + 0.18 * g1 - 0.6 * Math.max(band((y % 64) - 1, 1.5), band((xo % 256) - 1, 1.5));
+    }
+  } else if (kind === 'grate') {
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const bx = ((x % 16) + 16) % 16, by = ((y % 32) + 32) % 32;
+      const slot = bx >= 4 && bx <= 13 && by >= 4 && by <= 29;
+      L[y * S + x] = slot ? 0.25 + 0.1 * (by / 32) : 0.95 - 0.1 * band(bx - 2, 1);
+    }
+  }
+  const img = g.createImageData(S, S), d = img.data;
+  for (let i = 0; i < S * S; i++) { const v = Math.round(255 * (0.85 + 0.15 * Math.min(1, Math.max(0, L[i])))); d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = v; d[i * 4 + 3] = 255; }
+  g.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = maxAniso; t.colorSpace = THREE.NoColorSpace;
+  return t;
+}
+function chainTexture() {
+  const S = 256, [c, g] = cnv(S, S), img = g.createImageData(S, S), d = img.data, P = 32;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const m = (v) => { const r = ((v % P) + P) % P; return Math.min(r, P - r); };
+    const a = m(x + y + 0.5), b = m(x - y + 0.5), w = Math.min(a, b);
+    const cover = Math.max(0, Math.min(1, 2.6 - w));
+    const knot = a < 3 && b < 3 ? 0.12 : 0;
+    const lit = 0.78 + 0.22 * (a < b ? 1 - a / 3 : 1 - b / 3) + knot;
+    const i = (y * S + x) * 4;
+    d[i] = d[i + 1] = d[i + 2] = Math.round(255 * Math.min(1, lit)); d[i + 3] = Math.round(255 * cover);
+  }
+  g.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = maxAniso;
+  return t;
+}
+const PART_TILE = 64;
+function buildParts(parts) {
+  const groups = {}, hsl = {};
+  const group = (k) => (groups[k] ||= { pos: [], nrm: [], uv: [], col: [] });
+  const shade = (color, n, flat) => {
+    if (flat) return color;
+    const k = n[1] > 0.7 ? 0.08 : n[1] < -0.7 ? -0.2 : Math.abs(n[0]) >= Math.abs(n[2]) ? -0.04 : -0.1;
+    color.getHSL(hsl);
+    return new THREE.Color().setHSL(hsl.h, hsl.s, Math.min(1, Math.max(0, hsl.l * (1 + k))));
+  };
+  const quad = (G, P, color, center, flat) => {
+    let nx = 0, ny = 0, nz = 0;
+    for (let i = 0; i < P.length; i++) { const p = P[i], q = P[(i + 1) % P.length]; nx += (p[1] - q[1]) * (p[2] + q[2]); ny += (p[2] - q[2]) * (p[0] + q[0]); nz += (p[0] - q[0]) * (p[1] + q[1]); }
+    const l = Math.hypot(nx, ny, nz); if (l < 1e-6) return;
+    nx /= l; ny /= l; nz /= l;
+    const fc = [0, 1, 2].map((a) => P.reduce((s, p) => s + p[a], 0) / P.length);
+    if (nx * (fc[0] - center[0]) + ny * (fc[1] - center[1]) + nz * (fc[2] - center[2]) < 0) { P = P.slice().reverse(); nx = -nx; ny = -ny; nz = -nz; }
+    let tu, tv;
+    if (Math.abs(ny) > 0.7) { tu = [1, 0, 0]; tv = [0, 0, 1]; }
+    else { const h = Math.hypot(nx, nz) || 1; tu = [nz / h, 0, -nx / h]; tv = [ny * tu[2], nz * tu[0] - nx * tu[2], -ny * tu[0]]; }
+    const c = shade(color, [nx, ny, nz], flat);
+    for (let k = 1; k < P.length - 1; k++) for (const p of [P[0], P[k], P[k + 1]]) {
+      G.pos.push(p[0], p[1], p[2]); G.nrm.push(nx, ny, nz); G.col.push(c.r, c.g, c.b);
+      G.uv.push((p[0] * tu[0] + p[1] * tu[1] + p[2] * tu[2]) / PART_TILE, (p[0] * tv[0] + p[1] * tv[1] + p[2] * tv[2]) / PART_TILE);
+    }
+  };
+  const HEX_FACES = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]];
+  const addHex = (G, v, color, flat) => {
+    const center = [0, 1, 2].map((a) => v.reduce((s, q) => s + q[a], 0) / v.length);
+    for (const f of HEX_FACES) quad(G, f.map((i) => v[i]), color, center, flat);
+  };
+  const lerp = (p, q, t) => [0, 1, 2].map((k) => p[k] + (q[k] - p[k]) * t);
+  const at = (v, a, b, c) => lerp(lerp(lerp(v[0], v[1], a), lerp(v[3], v[2], a), b), lerp(lerp(v[4], v[5], a), lerp(v[7], v[6], a), b), c);
+  const sub = (v, a0, a1, b0, b1, c0, c1) => [at(v, a0, b0, c0), at(v, a1, b0, c0), at(v, a1, b1, c0), at(v, a0, b1, c0), at(v, a0, b0, c1), at(v, a1, b0, c1), at(v, a1, b1, c1), at(v, a0, b1, c1)];
+  const dist = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+  const frameColor = new THREE.Color('#F2C230'), glassColor = new THREE.Color('#BFD9E6');
+  for (const P of parts) {
+    const kind = PART_MATERIAL[P.role]; if (!kind) continue;
+    if (kind === 'glass') {
+      addHex(group('glass'), P.v, glassColor, true);
+      const la = dist(P.v[0], P.v[1]), lb = dist(P.v[0], P.v[3]), H = dist(P.v[0], P.v[4]), e = 0.06;
+      const t = 2 / H;
+      if (la >= lb) {
+        const s = 2 / la, pad = e / lb;
+        for (const box of [sub(P.v, -e / la, 1 + e / la, -pad, 1 + pad, 1 - t, 1 + e / H), sub(P.v, -e / la, s, -pad, 1 + pad, 0, 1 - t), sub(P.v, 1 - s, 1 + e / la, -pad, 1 + pad, 0, 1 - t)]) addHex(group('steel'), box, frameColor, false);
+      } else {
+        const s = 2 / lb, pad = e / la;
+        for (const box of [sub(P.v, -pad, 1 + pad, -e / lb, 1 + e / lb, 1 - t, 1 + e / H), sub(P.v, -pad, 1 + pad, -e / lb, s, 0, 1 - t), sub(P.v, -pad, 1 + pad, 1 - s, 1 + e / lb, 0, 1 - t)]) addHex(group('steel'), box, frameColor, false);
+      }
+      continue;
+    }
+    addHex(group(kind), P.v, P.color, kind === 'neon');
+    if (P.role === 'lamp') {
+      const c = [0, 1, 2].map((a) => P.v.reduce((t, q) => t + q[a], 0) / 8);
+      const light = new THREE.PointLight(0xffe7a8, 2.4, 300, 0);
+      light.position.set(c[0], c[1] - 10, c[2]); scene.add(light);
+    }
+  }
+  const std = (map, roughness, metalness = 0) => new THREE.MeshStandardMaterial({ map, vertexColors: true, roughness, metalness });
+  const mats = {
+    crate: std(partTexture('crate'), 0.5, 0.15), wall: std(partTexture('wall'), 0.65), stripe: std(null, 0.5), floor: std(partTexture('floor'), 0.9),
+    ledge: std(partTexture('ledge'), 0.85), roof: std(partTexture('roof'), 0.8), steel: std(partTexture('steel'), 0.45, 0.35), wood: std(partTexture('wood'), 0.75),
+    grate: std(partTexture('grate'), 0.5),
+    glass: new THREE.MeshStandardMaterial({ color: 0xaab2b8, map: chainTexture(), roughness: 0.5, metalness: 0.4, transparent: true, depthWrite: false }),
+    neon: new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false }),
+  };
+  const bounds = new THREE.Box3(), meshes = [];
+  for (const [kind, G] of Object.entries(groups)) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(G.pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(G.nrm, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(G.uv, 2));
+    if (kind !== 'glass') g.setAttribute('color', new THREE.Float32BufferAttribute(G.col, 3));
+    const mesh = new THREE.Mesh(g, mats[kind]);
+    mesh.name = `parts_${kind}`;
+    mesh.castShadow = kind !== 'glass' && kind !== 'neon'; mesh.receiveShadow = kind !== 'neon';
+    if (kind === 'glass') mesh.renderOrder = 1;
+    scene.add(mesh); meshes.push(mesh);
+    if (kind !== 'glass') { g.computeBoundingBox(); bounds.union(g.boundingBox); }
+  }
+  return { bounds, meshes };
+}
+
+/* =====================================================================
+   KZ MAP BUILD — Roblox-style parts colored like the original, triggers from the map's own logic
+   ===================================================================== */
+let level = null;
+const srcBoxToZone = (box, pad = 0, extraUp = 0) => ({ min: { x: box[0][0], y: box[0][2] - pad, z: -box[1][1] }, max: { x: box[1][0], y: box[1][2] + pad + extraUp, z: -box[0][1] } });
+function buildKzLevel(M) {
+  const Q = M.quant, O = M.origin;
+  const bytes = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  const point = (dv, o) => srcToThree(dv.getInt16(o, true) / Q + O[0], dv.getInt16(o + 2, true) / Q + O[1], dv.getInt16(o + 4, true) / Q + O[2]);
+  const pal = M.palette.map((p) => ({ color: new THREE.Color(`rgb(${p.rgb.join(',')})`), glass: p.glass, role: p.role }));
+  const parts = M.palette.some((p) => p.role) ? [] : null;
+  const geo = { solid: { pos: [], nrm: [], col: [] }, glass: { pos: [], nrm: [], col: [] } };
+  const tri = (G, a, b, c, color, out) => {
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const l = Math.hypot(nx, ny, nz); if (l < 1e-6) return;
+    nx /= l; ny /= l; nz /= l;
+    if (out && nx * out[0] + ny * out[1] + nz * out[2] < 0) { [b, c] = [c, b]; nx = -nx; ny = -ny; nz = -nz; }
+    for (const p of [a, b, c]) { G.pos.push(p[0], p[1], p[2]); G.nrm.push(nx, ny, nz); G.col.push(color.r, color.g, color.b); }
+  };
+  const solid = [], ladders = [];
+  const hb = bytes(M.hulls), hv = new DataView(hb.buffer);
+  for (let h = 0, o = 0; h < M.hullCount; h++) {
+    const nv = hb[o], nf = hb[o + 1], p = pal[hv.getUint16(o + 2, true)]; o += 4;
+    const v = []; for (let i = 0; i < nv; i++, o += 6) v.push(point(hv, o));
+    const faces = []; for (let f = 0; f < nf; f++) { const n = hb[o]; faces.push(Array.from(hb.subarray(o + 1, o + 1 + n))); o += 1 + n; }
+    const br = convexBrush(v, faces);
+    solid.push(br);
+    if (parts) { if (p.role === 'ladder') ladders.push(br); parts.push({ v, role: p.role, color: p.color }); continue; }
+    const c = [0, 1, 2].map((a) => v.reduce((s, q) => s + q[a], 0) / nv);
+    for (const f of faces) {
+      const out = [0, 1, 2].map((a) => f.reduce((s, i) => s + v[i][a], 0) / f.length - c[a]);
+      for (let k = 1; k < f.length - 1; k++) tri(p.glass ? geo.glass : geo.solid, v[f[0]], v[f[k]], v[f[k + 1]], p.color, out);
+    }
+  }
+  // triangle meshes: world, player clip and sky boundaries are solid (only world is drawn); ladders are solid too, and climbable
+  for (const m of M.meshes) {
+    const vv = new DataView(bytes(m.verts).buffer), tv = new DataView(bytes(m.tris).buffer);
+    for (let t = 0; t < m.nt; t++) {
+      const a = point(vv, tv.getUint16(t * 8, true) * 6), b = point(vv, tv.getUint16(t * 8 + 2, true) * 6), c = point(vv, tv.getUint16(t * 8 + 4, true) * 6);
+      const br = convexBrush([a, b, c], null); if (!br) continue;
+      solid.push(br); if (m.kind === 'ladder') ladders.push(br);
+      if (m.kind === 'solid' || m.kind === 'ladder') { const p = pal[tv.getUint16(t * 8 + 6, true)]; tri(p.glass ? geo.glass : geo.solid, a, b, c, p.color, null); }
+    }
+  }
+  brushSet = makeBrushSet(solid); ladderSet = makeBrushSet(ladders);
+
+  const bounds = new THREE.Box3();
+  if (parts) { level = { parts: buildParts(parts) }; bounds.copy(level.parts.bounds); }
+  for (const [G, mat] of [[geo.solid, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0, side: THREE.DoubleSide })],
+    [geo.glass, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.35, metalness: 0, transparent: true, opacity: 0.45, side: THREE.DoubleSide, depthWrite: false })]]) {
+    if (!G.pos.length) continue;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(G.pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(G.nrm, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(G.col, 3));
+    const mesh = new THREE.Mesh(g, mat); mesh.castShadow = !mat.transparent; mesh.receiveShadow = true; scene.add(mesh);
+    if (!mat.transparent) { g.computeBoundingBox(); bounds.copy(g.boundingBox); }
+  }
+  const center = bounds.getCenter(new THREE.Vector3()), size = bounds.getSize(new THREE.Vector3());
+  sun.target.position.copy(center);
+  sun.position.copy(center).add(LIGHT_DIR.clone().multiplyScalar(5000));
+  sun.shadow.mapSize.set(2048, 2048);
+  const half = Math.hypot(size.x, size.z) / 2 + 100;
+  Object.assign(sun.shadow.camera, { left: -half, right: half, top: half, bottom: -half, near: 100, far: 12000 });
+  sun.shadow.bias = -0.0006; sun.shadow.normalBias = 2.5;
+  if (parts) { renderer.shadowMap.type = THREE.PCFSoftShadowMap; sun.shadow.mapSize.set(4096, 4096); sun.shadow.normalBias = 1.5; }
+
+  const triggers = M.triggers.map((t) => ({ ...t, zone: srcBoxToZone(t.box, 2), touching: false }));
+  const has = (t, a) => t.actions.some((x) => x[0] === a);
+  const startT = triggers.find((t) => has(t, 'start')), endT = triggers.find((t) => has(t, 'end'));
+  startZone = srcBoxToZone(startT.box, 2, 64); endZone = srcBoxToZone(endT.box, 2, 64);
+  drawZone(startZone, 0x3dff6a); drawZone(endZone, 0xff4040);
+  // a marker over the next checkpoint, like the map's guide arrow
+  const arrow = new THREE.Mesh(new THREE.ConeGeometry(10, 22, 4), new THREE.MeshBasicMaterial({ color: 0xffd23a }));
+  arrow.rotation.x = Math.PI; scene.add(arrow);
+  level = {
+    triggers, fails: 0, off: new Set(), arrow, parts: level && level.parts,
+    tp(n) { const t = M.teleports[n]; return t ? { pos: srcToThree(...t.pos), yaw: -t.yaw * DEG } : spawn; },
+    reset() {
+      this.fails = 0; this.off = new Set(triggers.filter((t) => t.disabled).map((t) => t.name));
+      for (const t of triggers) t.touching = false;
+      this.aim(0);
+    },
+    aim(n) { const t = M.teleports[n + 1]; arrow.visible = !!t; if (t) { const p = srcToThree(...t.pos); arrow.position.set(p[0], p[1] + 70, p[2]); arrow.userData.y = p[1] + 70; } },
+  };
+  level.reset();
+}
+if (IS_KZ) buildKzLevel(KZMAP);
+
+/* =====================================================================
    SOURCE MOVEMENT
    ===================================================================== */
 const pos = new THREE.Vector3(), prevPos = new THREE.Vector3(), vel = new THREE.Vector3();
 let yaw = 0, pitch = 0, lastTickYaw = 0;
-let ground = null, onGroundLast = false, hullH = 72, viewOff = 64, prevViewOff = 64;
+let ground = null, onGroundLast = false, hullH = 72, viewOff = 64, prevViewOff = 64, ducked = false;
 let noclip = false, wheelJump = 0, oldJump = false;
 const keys = Object.create(null);
 
@@ -603,6 +986,7 @@ const keys = Object.create(null);
 const TR = { fraction: 1, hit: null, nx: 0, ny: 0, nz: 0, ex: 0, ey: 0, ez: 0 };
 const _p = [0, 0, 0], _d = [0, 0, 0], _mn = [0, 0, 0], _mx = [0, 0, 0];
 function trace(sx, sy, sz, dx, dy, dz, h) {
+  if (brushSet) return traceSet(brushSet, sx, sy, sz, dx, dy, dz, h);
   _p[0] = sx; _p[1] = sy; _p[2] = sz; _d[0] = dx; _d[1] = dy; _d[2] = dz;
   // broadphase bounds of the swept hull
   const bx0 = Math.min(sx, sx + dx) - HW - 1, bx1 = Math.max(sx, sx + dx) + HW + 1;
@@ -656,7 +1040,8 @@ function tryPlayerMove(dt) {
     if (!tr.hit) break;
     timeLeft -= timeLeft * tr.fraction;
     if (planes.length >= 5) { vel.set(0, 0, 0); break; }
-    planes.push([tr.nx, tr.ny, tr.nz]);
+    // KZ brushes: touching the same plane again adds nothing (two identical planes would zero the velocity on a surf ramp)
+    if (!(brushSet && planes.some((q) => q[0] * tr.nx + q[1] * tr.ny + q[2] * tr.nz > 0.9999))) planes.push([tr.nx, tr.ny, tr.nz]);
     let i;
     for (i = 0; i < planes.length; i++) {
       vel.copy(original); clipVelocity(planes[i], 1);
@@ -730,8 +1115,77 @@ function wish() {
   if (wishspeed > 0) { wx /= wishspeed; wz /= wishspeed; }
   let maxspeed = PHYS.sv_maxspeed;
   if (keys.ShiftLeft || keys.ShiftRight) maxspeed *= 0.52;
+  if (ducked && ground) maxspeed *= 0.34;
   if (wishspeed > maxspeed) wishspeed = maxspeed;
   return [wx, wz, wishspeed];
+}
+
+// KZ maps only: crouching (C), ladders and staying on slopes
+function handleDuck(dt) {
+  const want = !!keys.KeyC, fits = (y, h) => !solidAt(brushSet, pos.x, y, pos.z, h);
+  if (want && !ducked) {
+    if (!ground && fits(pos.y + 18, 54)) { pos.y += 18; prevPos.y += 18; viewOff -= 18; prevViewOff -= 18; } // in the air: pull the feet up
+    ducked = true; hullH = 54;
+  } else if (!want && ducked) {
+    if (!ground && fits(pos.y - 18, 72)) { pos.y -= 18; prevPos.y -= 18; viewOff += 18; prevViewOff += 18; ducked = false; hullH = 72; }
+    else if (fits(pos.y, 72)) { ducked = false; hullH = 72; }
+  }
+  const target = ducked ? 46 : 64;
+  viewOff += (target - viewOff) * Math.min(1, dt * 16);
+  if (Math.abs(target - viewOff) < 0.05) viewOff = target;
+}
+// CGameMovement::StayOnGround: walking down a slope keeps you on it
+function stayOnGround() {
+  let tr = trace(pos.x, pos.y, pos.z, 0, 2, 0, hullH);
+  const sx = tr.ex, sy = tr.ey, sz = tr.ez;
+  tr = trace(sx, sy, sz, 0, -(STEP + 2), 0, hullH);
+  if (tr.fraction > 0 && tr.fraction < 1 && !tr.startsolid && tr.ny >= 0.7 && Math.abs(pos.y - tr.ey) > 0.5 / 32) pos.set(tr.ex, tr.ey, tr.ez);
+}
+// CGameMovement::LadderMove: face a ladder and hold W to climb, jump to push off
+let onLadder = false;
+const ladderN = [0, 0, 0];
+function ladderMove(jumpHeld) {
+  if (!ladderSet.list.length) return false;
+  const fmove = ((keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0)) * 200, smove = ((keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0)) * 200;
+  let dx, dz;
+  if (onLadder) { dx = -ladderN[0] * 2; dz = -ladderN[2] * 2; }
+  else {
+    if (!fmove && !smove) return false;
+    const wx = Math.cos(yaw) * fmove - Math.sin(yaw) * smove, wz = Math.sin(yaw) * fmove + Math.cos(yaw) * smove, l = Math.hypot(wx, wz);
+    dx = (wx / l) * 2; dz = (wz / l) * 2;
+  }
+  const tr = traceSet(ladderSet, pos.x, pos.y, pos.z, dx, 0, dz, hullH);
+  if (!tr.hit || Math.abs(tr.ny) > 0.7) { onLadder = false; return false; }
+  const nx = tr.nx, ny = tr.ny, nz = tr.nz;
+  ladderN[0] = nx; ladderN[1] = ny; ladderN[2] = nz;
+  if (jumpHeld) { vel.set(nx * 270, ny * 270, nz * 270); onLadder = false; return false; }
+  if (!onLadder) { const snap = trace(pos.x, pos.y, pos.z, -nx * 2.1, 0, -nz * 2.1, hullH); if (snap.fraction > 0) pos.set(snap.ex, snap.ey, snap.ez); } // grab flush against the rungs
+  onLadder = true;
+  if (!fmove && !smove) { vel.set(0, 0, 0); return true; }
+  const cp = Math.cos(pitch), vx = Math.cos(yaw) * cp * fmove - Math.sin(yaw) * smove, vy = -Math.sin(pitch) * fmove, vz = Math.sin(yaw) * cp * fmove + Math.cos(yaw) * smove;
+  let px = nz, pz = -nx; const pl = Math.hypot(px, pz) || 1; px /= pl; pz /= pl; // perp = up x normal
+  const into = vx * nx + vy * ny + vz * nz;                                     // speed into the ladder becomes climbing speed
+  const tx = ny * pz, ty = nz * px - nx * pz, tz = -ny * px;                     // normal x perp: up the ladder
+  vel.set(vx - nx * into - into * tx, vy - ny * into - into * ty, vz - nz * into - into * tz);
+  if (ground && into > 0) { vel.x += nx * 200; vel.y += ny * 200; vel.z += nz * 200; }
+  return true;
+}
+// the map's trigger_multiples: checkpoints, fall zones (back to your checkpoint) and the reset pad
+function kzTriggers(dt) {
+  for (const t of level.triggers) {
+    const inside = !level.off.has(t.name) && overlaps(t.zone);
+    if (!inside) { t.touching = false; continue; }
+    if (t.touching) continue;
+    t.touching = true;
+    for (const [action, arg] of t.actions) {
+      if (action === 'cp') { if (arg !== checkpoint && !t.actions.some((x) => x[0] === 'end' || x[0] === 'start')) toast(`<small style="font-size:15px">Checkpoint ${arg}</small>`, 900); checkpoint = arg; level.aim(arg); }
+      else if (action === 'enable') level.off.delete(arg);
+      else if (action === 'disable') level.off.add(arg);
+      else if (action === 'fall') { level.fails++; if (runState === 'running') runTime += dt; teleportTo(level.tp(checkpoint)); return true; }
+      else if (action === 'reset') { restart(); return true; }
+    }
+  }
+  return false;
 }
 
 /* =====================================================================
@@ -761,7 +1215,8 @@ function teleportTo(dest, fx = true) {
   if (fx) { flash(); sfx.teleport(); }
   categorizePosition();
 }
-function restart() { checkpoint = 0; teleportTo(spawn, true); resetRun(); runState = 'start'; vmDraw(); }
+// KZ spawns away from the start zone: the run waits until you step onto it
+function restart() { checkpoint = 0; if (level) level.reset(); teleportTo(spawn, true); resetRun(); runState = IS_KZ ? 'wait' : 'start'; vmDraw(); }
 function resetRun() {
   flushReplaySave();
   rec.events.length = 0;
@@ -770,7 +1225,7 @@ function resetRun() {
 }
 
 // PBs and replays from before the timer started on the first jump aren't comparable, so v2 starts fresh
-const PB_KEY = 'bhop_brick_pb_v2', REPLAY_KEY = 'bhop_brick_replay_v2_';
+const PB_KEY = IS_KZ ? `bhop_${MAP_ID}_pb` : 'bhop_brick_pb_v2', REPLAY_KEY = IS_KZ ? `bhop_${MAP_ID}_replay_` : 'bhop_brick_replay_v2_';
 let pbCache = null;
 function loadPB() {
   if (pbCache) return pbCache;
@@ -847,6 +1302,18 @@ function tick(dt) {
     return;
   }
 
+  if (IS_KZ) {
+    handleDuck(dt);
+    if (ladderMove(jumpHeld)) { // FullLadderMove: no gravity or friction while climbing
+      oldJump = jumpHeld;
+      const speedBefore = Math.hypot(vel.x, vel.z);
+      tryPlayerMove(dt);
+      categorizePosition();
+      afterMove(dt, dyaw, false, speedBefore, false);
+      return;
+    }
+  }
+
   if (!ground) vel.y -= PHYS.sv_gravity * 0.5 * dt; // StartGravity
 
   if (ground) groundTicks++;
@@ -870,6 +1337,7 @@ function tick(dt) {
     accelerate(wx, wz, wishspeed, PHYS.sv_accelerate, dt);
     vel.y = 0;
     if (vel.x !== 0 || vel.z !== 0) stepMove(dt);
+    if (IS_KZ) stayOnGround();
   } else {
     airAccelerate(wx, wz, wishspeed, PHYS.sv_airaccelerate, dt);
     tryPlayerMove(dt);
@@ -878,7 +1346,11 @@ function tick(dt) {
   categorizePosition();
   clampVelocity();
   if (!ground) vel.y -= PHYS.sv_gravity * 0.5 * dt; else vel.y = 0; // FinishGravity
+  afterMove(dt, dyaw, jumped, speedBefore, startedThisTick);
+}
 
+// stats, landing, map triggers and the timer, after this tick's movement
+function afterMove(dt, dyaw, jumped, speedBefore, startedThisTick) {
   // --- stats (air strafing) ---
   const hs = Math.hypot(vel.x, vel.z);
   if (!ground) {
@@ -896,8 +1368,10 @@ function tick(dt) {
   if (ground && !onGroundLast && !jumped) { sfx.land(Math.min(1, speedBefore / 600)); landSpeed = hs; groundTicks = 0; }
   onGroundLast = !!ground;
 
+  if (IS_KZ) { if (kzTriggers(dt)) return; }
+
   // --- checkpoints ---
-  if (ground && ground.kind === 'platform') {
+  if (!IS_KZ && ground && ground.kind === 'platform') {
     for (let i = checkpoint + 1; i < CHECKPOINTS.length; i++) {
       if (onCheckpoint(i)) { checkpoint = i;  break; }
     }
@@ -1003,6 +1477,7 @@ const REPLAY_PREROLL = 200;         // ticks kept from before leaving the start 
 const REPLAY_POSTROLL = 60;         // ticks kept after finishing
 const REPLAY_MAX_TICKS = 60000;     // stop recording after 10 minutes
 const KEYBITS = [['KeyW', 1], ['KeyA', 2], ['KeyS', 4], ['KeyD', 8], ['Space', 16]];
+const REPLAY_ORIGIN = IS_KZ ? [-2300, 0, 1900] : [0, 0, 0]; // kz_hub is far from the origin: store positions relative to its middle
 const rec = { frames: [], base: 0, tick: 0, startTick: -1, startTime: 0, events: [], pending: null };
 const replayCache = {};
 
@@ -1019,7 +1494,7 @@ function recordTick() {
   if (rec_.frames.length / 8 > REPLAY_MAX_TICKS + REPLAY_PREROLL) { rec_.startTick = -1; return; } // too long: stop recording
   rec_.frames.push(pos.x, pos.y, pos.z, yaw, pitch, viewOff, Math.hypot(vel.x, vel.z), flags);
   rec_.tick++;
-  if (runState === 'start') { // rolling pre-roll buffer
+  if (runState === 'start' || runState === 'wait') { // rolling pre-roll buffer
     const extra = rec_.frames.length / 8 - REPLAY_PREROLL;
     if (extra > 0) { rec_.frames.splice(0, extra * 8); rec_.base += extra; }
     rec_.startTick = -1;
@@ -1040,7 +1515,7 @@ function flushReplaySave() {
   for (let i = 0; i < n; i++) {
     const o = i * 14, k = i * 8;
     const wy = ((f[k + 3] % (2 * Math.PI)) + 3 * Math.PI) % (2 * Math.PI) - Math.PI; // wrap yaw to [-pi, pi)
-    dv.setInt16(o, i16(f[k] * 8)); dv.setInt16(o + 2, i16(f[k + 1] * 8)); dv.setInt16(o + 4, i16(f[k + 2] * 8));
+    dv.setInt16(o, i16((f[k] - REPLAY_ORIGIN[0]) * 8)); dv.setInt16(o + 2, i16((f[k + 1] - REPLAY_ORIGIN[1]) * 8)); dv.setInt16(o + 4, i16((f[k + 2] - REPLAY_ORIGIN[2]) * 8));
     dv.setInt16(o + 6, i16(wy / Math.PI * 32767)); dv.setInt16(o + 8, i16(f[k + 4] / (Math.PI / 2) * 32767));
     dv.setUint8(o + 10, Math.min(255, Math.round(f[k + 5] * 3))); dv.setUint16(o + 11, Math.min(65535, Math.round(f[k + 6] * 4)));
     dv.setUint8(o + 13, f[k + 7]);
@@ -1065,7 +1540,7 @@ function decodeReplay(saved) {
   let prevYaw = 0;
   for (let i = 0; i < n; i++) {
     const o = i * 14;
-    r.x[i] = dv.getInt16(o) / 8; r.y[i] = dv.getInt16(o + 2) / 8; r.z[i] = dv.getInt16(o + 4) / 8;
+    r.x[i] = dv.getInt16(o) / 8 + REPLAY_ORIGIN[0]; r.y[i] = dv.getInt16(o + 2) / 8 + REPLAY_ORIGIN[1]; r.z[i] = dv.getInt16(o + 4) / 8 + REPLAY_ORIGIN[2];
     let yw = dv.getInt16(o + 6) / 32767 * Math.PI;
     if (i) yw = prevYaw + ((((yw - prevYaw) % (2 * Math.PI)) + 3 * Math.PI) % (2 * Math.PI) - Math.PI); // unwrap
     r.yaw[i] = prevYaw = yw;
@@ -1234,8 +1709,8 @@ function replayKey(e) {
    ONLINE LEADERBOARD — top 100 per mode, top 10 keep replays (Cloudflare Pages Functions + D1).
    Only available when the game is served from a website, not opened as a local file.
    ===================================================================== */
-const ON_PAGES_DEV = /\.pages\.dev$/.test(location.hostname); // the game's home is yvlyang.com/bhop/
-const LB_ONLINE = location.protocol.startsWith('http');
+const ON_PAGES_DEV = location.hostname === 'bhop-ct6.pages.dev'; // the game's home is yvlyang.com/bhop/
+const LB_ONLINE = location.protocol.startsWith('http') && !IS_KZ; // the leaderboard is bhop_brick only
 // relative to the game, so it works at yvlyang.com/bhop/ (proxied) and at the game's own pages.dev address
 const apiUrl = (path) => new URL('api/' + path, location.origin + location.pathname.replace(/[^/]*$/, '')).href;
 const lbState = { mode: modeName(), pending: null, rows: [] };
@@ -1467,8 +1942,8 @@ function updateHUD() {
   H.speed.className = 'num ' + (hs > old + 2 ? 'up' : hs < old - 2 ? 'down' : '');
   H.timer.textContent = fmtTime(runState === 'finished' ? lastFinish : runState === 'running' && playing ? runTime + acc : runTime); // acc: time since the last tick
   const pb = loadPB()[pbKey()];
-  const status = noclip ? 'NOCLIP' : runState === 'start' ? '<span class="zone">START</span>' : runState === 'finished' ? '<span class="done">FINISHED</span>'
-    : runState === 'invalid' ? 'INVALID' : checkpoint ? `CP ${checkpoint}` : '';
+  const status = noclip ? 'NOCLIP' : runState === 'wait' ? 'GO TO THE START' : runState === 'start' ? '<span class="zone">START</span>' : runState === 'finished' ? '<span class="done">FINISHED</span>'
+    : runState === 'invalid' ? 'INVALID' : checkpoint ? `CP ${checkpoint}${IS_KZ ? ` · FAILS ${level.fails}` : ''}` : '';
   const wr = cv.cl_ghost === 2 ? wrCache[modeName()] : null;
   const subText = [status, pb ? `PB ${fmtTime(pb)}` : '', wr && wr.r ? `WR ${fmtTime(wr.time)} ${escapeHtml(wr.name)}` : ''].filter(Boolean).join(' · ');
   if (subText !== lastPBText) { H.sub.innerHTML = subText; lastPBText = subText; }
@@ -1595,6 +2070,7 @@ addEventListener('contextmenu', (e) => { if (playing) e.preventDefault(); });
 addEventListener('blur', () => { for (const k in keys) keys[k] = false; mouseHeld[0] = mouseHeld[2] = false; });
 
 addEventListener('keydown', (e) => {
+  if (IS_EDITOR) return;
   if (e.code === 'Backquote') { e.preventDefault(); toggleConsole(); return; }
   if (watching && !consoleOpen) { replayKey(e); return; }
   if (consoleOpen || !playing) return;
@@ -1605,7 +2081,7 @@ addEventListener('keydown', (e) => {
   if (e.code === 'KeyN') setCvar('cl_night', cv.cl_night ? 0 : 1);
   if (e.code === 'KeyF') vmInspect();
   if (e.code === 'KeyH') vmSwapHands();
-  if (e.code === 'KeyT') { if (runState === 'finished') restart(); else teleportTo(CHECKPOINTS[checkpoint].dest); }
+  if (e.code === 'KeyT') { if (runState === 'finished') restart(); else teleportTo(IS_KZ ? level.tp(checkpoint) : CHECKPOINTS[checkpoint].dest); }
 });
 addEventListener('keyup', (e) => { keys[e.code] = false; });
 
@@ -1633,7 +2109,7 @@ conIn.addEventListener('keydown', (e) => {
     case 'cvarlist': for (const k in DEFAULTS) print(`  ${k.padEnd(24)} ${cv[k]}   (default ${DEFAULTS[k]})`); break;
     case 'mode': if (args[0] === 'auto' || args[0] === 'scroll') { setCvar('sv_autobunnyhopping', args[0] === 'auto' ? 1 : 0); print('mode ' + args[0]); } else print('mode: ' + modeName()); break;
     case 'r': case 'restart': restart(); break;
-    case 'kill': teleportTo(CHECKPOINTS[checkpoint].dest); break;
+    case 'kill': teleportTo(IS_KZ ? level.tp(checkpoint) : CHECKPOINTS[checkpoint].dest); break;
     case 'noclip': noclip = !noclip; if (noclip && runState === 'running') runState = 'invalid'; print('noclip ' + (noclip ? 'ON' : 'OFF')); break;
     case 'clear': conLog.textContent = ''; break;
     case 'pb_reset': savePB({}); print('personal bests cleared'); break;
@@ -1972,6 +2448,7 @@ function frame(now) {
   camera.rotation.set(-pitch, -yaw - Math.PI / 2, 0);
   sky.position.copy(eye);
   skyUniforms.time.value = now / 1000;
+  if (level && level.arrow.visible) { level.arrow.position.y = level.arrow.userData.y + Math.sin(now / 300) * 6; level.arrow.rotation.y = now / 700; }
   // fade between day and night over ~0.6s
   const target = cv.cl_night ? 1 : 0;
   if (nightMix !== target) { nightMix = nightMix < 0 ? target : target > nightMix ? Math.min(target, nightMix + dt / 0.6) : Math.max(target, nightMix - dt / 0.6); applyLighting(nightMix); }
@@ -1990,17 +2467,26 @@ function frame(now) {
 }
 
 // debug hooks (used for automated testing)
-window.bhop = { cv, pos, vel, keys, solids, teleports, CHECKPOINTS, get ground() { return ground && ground.kind; },
+window.bhop = { cv, pos, vel, keys, solids, teleports, CHECKPOINTS, get level() { return level; }, get brushSet() { return brushSet; }, set brushSet(v) { brushSet = v; }, convexBrush, makeBrushSet, get ladderSet() { return ladderSet; }, get onLadder() { return onLadder; }, get ducked() { return ducked; }, traceSet, get checkpointN() { return checkpoint; }, set checkpointN(v) { checkpoint = v; }, spawn, get ground() { return ground && ground.kind; },
   get yaw() { return yaw; }, set yaw(v) { yaw = v; }, set pitch(v) { pitch = v; }, set mouseAcc(v) { mouseAcc = v; },
   get runState() { return runState; }, get runTime() { return runTime; }, get lastFinish() { return lastFinish; }, get checkpoint() { return checkpoint; }, rec, ghost, getReplay, submitToLeaderboard, lbState, startWatching, stopWatching, view, set playing(v) { playing = v; }, get watching() { return watching; }, vm, WRIST, VM_REST, VM_ARM_DIR, CLIPS, updateRestPose, vmAttack, vmInspect, run, get jumpLog() { return jumpLog; }, tick, restart, teleportTo, setCvar };
 
 renderer.shadowMap.needsUpdate = true;
+if (IS_KZ) {
+  document.title = MAP_ID;
+  document.querySelector('.panel h1').textContent = MAP_ID;
+  document.querySelector('.panel .sub').textContent = 'Climb to the top. Falling sends you back to your last checkpoint.';
+  document.querySelector('.keys').innerHTML = 'WASD move · Space jump · C crouch · W into a ladder to climb · Shift walk<br>R restart · T back to checkpoint · N day / night · Esc menu · ` console';
+  document.querySelector('.credit').insertAdjacentHTML('afterbegin', `Layout: CSGOHUB KZ by Darnias &amp; lmtlss, CS2 port by DEAFPS · `);
+}
 syncMenu();
 restart();
 showLeaderboard();
 // ?preview hides the menu + HUD (used for the portfolio screenshot)
 if (new URLSearchParams(location.search).has('preview')) { menu.hidden = true; $('hud').style.display = 'none'; }
-requestAnimationFrame(frame);
+if (IS_EDITOR) {
+  await import('./map-editor.js').then(({ startEditor }) => startEditor({ THREE, renderer, map: KZMAP }));
+} else requestAnimationFrame(frame);
 </script>
 <script>
   setTimeout(() => { if (!window.bhop) showFatal('The game did not start. If there is no other error above, Three.js could not be loaded from cdn.jsdelivr.net — check your internet connection.'); }, 6000);
