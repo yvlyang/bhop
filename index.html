@@ -861,14 +861,18 @@ function tick(dt) {
 
   // --- timer (sub-tick: start/finish are placed at the exact moment inside this tick you crossed the line) ---
   const inStart = overlaps(startZone);
-  if (inStart && !(runState === 'running' && !leftStart)) { // coming back to the start zone resets the run
+  if (inStart && ground && !(runState === 'running' && !leftStart)) { // standing in the start zone resets the run; flying through it doesn't
     if (runState !== 'start') resetRun();
     runState = 'start'; runTime = 0;
-  } else if (runState === 'start') { // walked out without jumping
-    const cross = zoneCrossing(startZone);
-    startRun((1 - (cross ? cross[1] : 0)) * dt); // only the part of the tick after leaving the zone
-    leftStart = true;
-    if (overlaps(endZone)) finishRun();
+    const hs = Math.hypot(vel.x, vel.z); // speed from outside the zone doesn't carry into a new run
+    if (hs > PHYS.sv_maxspeed) { vel.x *= PHYS.sv_maxspeed / hs; vel.z *= PHYS.sv_maxspeed / hs; }
+  } else if (runState === 'start') {
+    if (!inStart) { // walked out without jumping
+      const cross = zoneCrossing(startZone);
+      startRun((1 - (cross ? cross[1] : 0)) * dt); // only the part of the tick after leaving the zone
+      leftStart = true;
+      if (overlaps(endZone)) finishRun();
+    }
   } else if (runState === 'running') {
     if (!inStart) leftStart = true;
     if (overlaps(endZone)) {
