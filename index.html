@@ -204,7 +204,7 @@
   <div class="menuRow">
   <div class="panel">
     <h1>bhop_brick</h1>
-    <label class="map-choice">Map<select id="mapChoice"><option value="bhop_brick">bhop_brick [recommended]</option><option value="kz_hub">kz_hub</option></select></label>
+    <label class="map-choice">Map<select id="mapChoice"><option value="bhop_brick">bhop_brick [recommended]</option><option value="kz_hub_clean">kz_hub_clean</option></select></label>
     <div class="row">
       <div class="seg"><button id="m_auto">Autohop</button><button id="m_scroll">Scroll</button></div>
       <div class="seg icons"><button id="t_day">Day</button><button id="t_night">Night</button></div>
@@ -288,7 +288,7 @@ const MAP_ID = KZ_MAPS.includes(new URLSearchParams(location.search).get('map'))
 const IS_KZ = MAP_ID !== 'bhop_brick';
 const IS_EDITOR = IS_KZ && new URLSearchParams(location.search).get('editor') === '1';
 const mapChoice = $('mapChoice');
-if (MAP_ID === 'kz_hub_clean') mapChoice.add(new Option('kz_hub_clean', 'kz_hub_clean'));
+if (MAP_ID === 'kz_hub') mapChoice.add(new Option('kz_hub', 'kz_hub'));
 mapChoice.value = MAP_ID;
 mapChoice.addEventListener('change', () => {
   const url = new URL(location.href);
