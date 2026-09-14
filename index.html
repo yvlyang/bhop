@@ -204,7 +204,6 @@
   <div class="menuRow">
   <div class="panel">
     <h1>bhop_brick</h1>
-    <p class="sub">Air strafe with A / D while turning your mouse.</p>
     <label class="map-choice">Map<select id="mapChoice"><option value="bhop_brick">bhop_brick [recommended]</option><option value="kz_hub">kz_hub</option></select></label>
     <div class="row">
       <div class="seg"><button id="m_auto">Autohop</button><button id="m_scroll">Scroll</button></div>
@@ -2492,7 +2491,6 @@ renderer.shadowMap.needsUpdate = true;
 if (IS_KZ) {
   document.title = MAP_ID;
   document.querySelector('.panel h1').textContent = MAP_ID;
-  document.querySelector('.panel .sub').textContent = 'Climb to the top. Falling sends you back to your last checkpoint.';
   document.querySelector('.keys').innerHTML = 'WASD move · Space jump · C crouch · W into a ladder to climb · Shift walk<br>R restart · T back to checkpoint · N day / night · Esc menu · ` console';
   document.querySelector('.credit').insertAdjacentHTML('afterbegin', `Layout: CSGOHUB KZ by Darnias &amp; lmtlss, CS2 port by DEAFPS · `);
 }
