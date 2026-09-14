@@ -726,6 +726,8 @@ function solidAt(set, x, y, z, h) {
 let level = null;
 const srcBoxToZone = (box, pad = 0, extraUp = 0) => ({ min: { x: box[0][0], y: box[0][2] - pad, z: -box[1][1] }, max: { x: box[1][0], y: box[1][2] + pad + extraUp, z: -box[0][1] } });
 function buildKzLevel(M) {
+  Object.assign(LIGHTING.day, { sky: new THREE.Color(0xe0efff), ground: new THREE.Color(0x9baec2), hemi: 1.8, sun: new THREE.Color(0xffffff), sunI: 1.65 });
+  Object.assign(LIGHTING.night, { ground: new THREE.Color(0x526987), hemi: 1.25 });
   const Q = M.quant, O = M.origin;
   const bytes = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
   const point = (dv, o) => srcToThree(dv.getInt16(o, true) / Q + O[0], dv.getInt16(o + 2, true) / Q + O[1], dv.getInt16(o + 4, true) / Q + O[2]);
@@ -737,7 +739,8 @@ function buildKzLevel(M) {
     const l = Math.hypot(nx, ny, nz); if (l < 1e-6) return;
     nx /= l; ny /= l; nz /= l;
     if (out && nx * out[0] + ny * out[1] + nz * out[2] < 0) { [b, c] = [c, b]; nx = -nx; ny = -ny; nz = -nz; }
-    for (const p of [a, b, c]) { G.pos.push(p[0], p[1], p[2]); G.nrm.push(nx, ny, nz); G.col.push(color.r, color.g, color.b); }
+    const shade = ny > 0.65 ? 1.12 : ny < -0.65 ? 0.78 : 0.92;
+    for (const p of [a, b, c]) { G.pos.push(p[0], p[1], p[2]); G.nrm.push(nx, ny, nz); G.col.push(Math.min(1, color.r * shade), Math.min(1, color.g * shade), Math.min(1, color.b * shade)); }
   };
   const solid = [], ladders = [];
   const hb = bytes(M.hulls), hv = new DataView(hb.buffer);
@@ -765,13 +768,13 @@ function buildKzLevel(M) {
   brushSet = makeBrushSet(solid); ladderSet = makeBrushSet(ladders);
 
   const bounds = new THREE.Box3();
-  for (const [G, mat] of [[geo.solid, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0, side: THREE.DoubleSide })],
+  for (const [G, mat] of [[geo.solid, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0, side: THREE.DoubleSide })],
     [geo.glass, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.35, metalness: 0, transparent: true, opacity: 0.45, side: THREE.DoubleSide, depthWrite: false })]]) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(G.pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(G.nrm, 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute(G.col, 3));
-    const mesh = new THREE.Mesh(g, mat); mesh.castShadow = !mat.transparent; mesh.receiveShadow = true; scene.add(mesh);
+    const mesh = new THREE.Mesh(g, mat); mesh.castShadow = false; mesh.receiveShadow = false; scene.add(mesh);
     if (!mat.transparent) { g.computeBoundingBox(); bounds.copy(g.boundingBox); }
   }
   const center = bounds.getCenter(new THREE.Vector3()), size = bounds.getSize(new THREE.Vector3());
