@@ -944,6 +944,7 @@ function buildKzLevel(M) {
   const half = Math.hypot(size.x, size.z) / 2 + 100;
   Object.assign(sun.shadow.camera, { left: -half, right: half, top: half, bottom: -half, near: 100, far: 12000 });
   sun.shadow.bias = -0.0006; sun.shadow.normalBias = 2.5;
+  if (parts) { renderer.shadowMap.type = THREE.PCFSoftShadowMap; sun.shadow.mapSize.set(4096, 4096); sun.shadow.normalBias = 1.5; }
 
   const triggers = M.triggers.map((t) => ({ ...t, zone: srcBoxToZone(t.box, 2), touching: false }));
   const has = (t, a) => t.actions.some((x) => x[0] === a);
