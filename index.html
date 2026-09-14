@@ -1074,6 +1074,24 @@ function decodeReplay(saved) {
     r.speed[i] = dv.getUint16(o + 11) / 4; r.keys[i] = dv.getUint8(o + 13);
   }
   r.dt = 1 / TICKRATE;
+  // run stats up to each tick, for the HUD while spectating. Like live play, sync counts airborne ticks where
+  // the held strafe key matches the turn; a jump starts an airborne stretch and landing (or a teleport) ends it
+  const air = new Uint8Array(n), jumps = saved.events.filter((e) => e.type === 'jump').map((e) => e.tick).sort((a, b) => a - b);
+  jumps.forEach((j, k) => {
+    for (let i = Math.max(1, j), end = Math.min(n, jumps[k + 1] ?? n); i < end; i++) {
+      if (i > j + 1 && r.y[i - 1] - r.y[i] > 1 && (i + 1 >= n || r.y[i + 1] >= r.y[i] - 0.2)) break;
+      if (i > j && Math.hypot(r.x[i] - r.x[i - 1], r.z[i] - r.z[i - 1]) > 60) break;
+      air[i] = 1;
+    }
+  });
+  r.finishIdx = Math.min(n - 1, saved.startIdx + Math.ceil((saved.time - saved.startTime) / r.dt - 1e-9));
+  r.syncGood = new Uint32Array(n); r.syncTotal = new Uint32Array(n); r.maxSpeed = new Float32Array(n);
+  for (let i = Math.max(1, saved.startIdx); i <= r.finishIdx; i++) {
+    let good = r.syncGood[i - 1], total = r.syncTotal[i - 1];
+    const dyaw = r.yaw[i] - r.yaw[i - 1], a = r.keys[i] & 2, d = r.keys[i] & 8;
+    if (air[i] && Math.abs(dyaw) > 1e-6) { total++; if ((dyaw < 0 && a && !d) || (dyaw > 0 && d && !a)) good++; }
+    r.syncGood[i] = good; r.syncTotal[i] = total; r.maxSpeed[i] = Math.max(r.maxSpeed[i - 1], r.speed[i]);
+  }
   r.tMin = saved.startTime - saved.startIdx * r.dt;
   r.tMax = saved.startTime + (n - 1 - saved.startIdx) * r.dt;
   r.eventTime = (tick) => saved.startTime + (tick - saved.startIdx) * r.dt;
@@ -1177,6 +1195,8 @@ function updateReplayView(dt) {
   for (const [k, b] of KEYBITS) keys[k] = !!(_ws.keys & b);
   if (!view.paused) mouseAcc += dyaw * 400;
   runTime = Math.max(0, view.t); lastFinish = r.time;
+  const ti = Math.max(0, Math.min(r.finishIdx, Math.floor(r.startIdx + (view.t - r.startTime) / r.dt)));
+  run.syncGood = r.syncGood[ti]; run.syncTotal = r.syncTotal[ti]; run.maxSpeed = r.maxSpeed[ti];
   runState = view.t < 0 ? 'start' : view.t >= r.time ? 'finished' : 'running';
   // events between the previous and current time: jumps update the HUD, attacks play the knife
   if (view.t > prevT) for (const e of r.events) {
