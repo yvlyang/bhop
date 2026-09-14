@@ -75,6 +75,48 @@ assert.equal(validateRun({ ...run, time: time + 1, replay: { ...run.replay, time
 const bad = Buffer.from(bytes);
 bad.writeInt16BE(30000, 14 * 100);
 assert.equal(validateRun({ ...run, replay: { ...run.replay, b64: bad.toString('base64') } }).ok, false);
+const crouchFall = Buffer.from(bytes);
+for (let i = 0; i < 601; i++) crouchFall.writeUInt8(64 * 3, i * 14 + 10);
+const fallTick = 100;
+const shiftedY = crouchFall.readInt16BE((fallTick - 1) * 14 + 2) - 53 * 8;
+crouchFall.writeInt16BE(shiftedY, fallTick * 14 + 2);
+crouchFall.writeUInt8(49 * 3, fallTick * 14 + 10);
+for (let i = fallTick + 1; i <= fallTick + 3; i++) {
+  const targetY = bytes.readInt16BE((fallTick + 3) * 14 + 2);
+  crouchFall.writeInt16BE(Math.round(shiftedY + (targetY - shiftedY) * (i - fallTick) / 3), i * 14 + 2);
+  crouchFall.writeUInt8(49 * 3, i * 14 + 10);
+}
+assert.equal(validateRun({ ...run, replay: { ...run.replay, b64: crouchFall.toString('base64') } }).ok, true);
+crouchFall.writeUInt8(64 * 3, fallTick * 14 + 10);
+assert.equal(validateRun({ ...run, replay: { ...run.replay, b64: crouchFall.toString('base64') } }).ok, false);
+const returnFrames = [[...start, 64]];
+const walkTo = (target, eye = 64) => {
+  const last = returnFrames.at(-1), steps = Math.max(1, Math.ceil(Math.hypot(...target.map((v, k) => v - last[k])) / 3));
+  for (let i = 1; i <= steps; i++) returnFrames.push([...target.map((v, k) => last[k] + (v - last[k]) * i / steps), eye]);
+};
+const cpBox = map.triggers.find(t => t.actions.some(a => a[0] === 'cp' && a[1] === 14)).box;
+const cpPoint = [(cpBox[0][0] + cpBox[1][0]) / 2, cpBox[0][2] + 1, -(cpBox[0][1] + cpBox[1][1]) / 2];
+walkTo(cpPoint);
+walkTo([cpPoint[0], cpPoint[1] + 100, cpPoint[2]]);
+const returnIndex = returnFrames.length, dest = map.teleports[14].pos;
+returnFrames.push([dest[0], dest[2] + 18, -dest[1], 49]);
+walkTo(end, 49);
+const returnBytes = Buffer.alloc(returnFrames.length * 14);
+let returnFinish = -1;
+for (let i = 0; i < returnFrames.length; i++) {
+  const p = returnFrames[i];
+  p.slice(0, 3).forEach((v, k) => returnBytes.writeInt16BE(Math.round((v - origin[k]) * 8), i * 14 + k * 2));
+  returnBytes.writeUInt8(p[3] * 3, i * 14 + 10);
+  returnBytes.writeUInt16BE(i ? 4000 : 0, i * 14 + 11);
+  if (returnFinish < 0 && p[0] + 16 > endBox[0][0] && p[0] - 16 < endBox[1][0] && p[2] + 16 > -endBox[1][1] && p[2] - 16 < -endBox[0][1] && p[1] + 72 > endBox[0][2] - 2 && p[1] < endBox[1][2] + 66) returnFinish = i;
+}
+const returnTime = (returnFinish - 1) * .01;
+const returningRun = { ...run, time: returnTime, replay: { ...run.replay, time: returnTime, n: returnFrames.length, b64: returnBytes.toString('base64') } };
+assert.equal(validateRun(returningRun).ok, true, JSON.stringify(validateRun(returningRun)));
+returnBytes.writeInt16BE(Math.round((map.teleports[35].pos[0] - origin[0]) * 8), returnIndex * 14);
+returnBytes.writeInt16BE(Math.round(map.teleports[35].pos[2] * 8), returnIndex * 14 + 2);
+returnBytes.writeInt16BE(Math.round((-map.teleports[35].pos[1] - origin[2]) * 8), returnIndex * 14 + 4);
+assert.equal(validateRun({ ...returningRun, replay: { ...returningRun.replay, b64: returnBytes.toString('base64') } }).ok, false);
 response = await post(submit, { ...run, token: tokenA, name: 'FRESHNAME' });
 assert.equal(response.status, 200, await response.text());
 const rows = (await (await get(leaderboard, 'map=kz_hub&mode=scroll')).json()).rows;
