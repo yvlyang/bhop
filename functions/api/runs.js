@@ -5,7 +5,11 @@ import {
 
 const MAX_BODY = 2_000_000; // a 10-minute replay is ~1.2 MB of JSON
 
-export async function onRequestPost({ request, env }) {
+export async function onRequestPost(context) {
+  try { return await submitRun(context); } catch (e) { return json({ error: 'server error, try again' }, 500); }
+}
+
+async function submitRun({ request, env }) {
   const db = env.DB;
   if (!db) return noDatabase();
   if (Number(request.headers.get('content-length') || 0) > MAX_BODY) return json({ error: 'replay too large' }, 413);
@@ -28,9 +32,9 @@ export async function onRequestPost({ request, env }) {
   }
   const now = Date.now();
   const existing = await db.prepare('SELECT time, created_at, updated_at FROM runs WHERE player_id = ?1 AND mode = ?2').bind(playerId, body.mode).first();
-  if (existing && now - existing.updated_at < 5000) return json({ error: 'too many submissions, try again in a few seconds' }, 429);
+  const improved = !existing || body.time < existing.time;
+  if (improved && existing && now - existing.updated_at < 5000) return json({ error: 'too many submissions, try again in a few seconds' }, 429);
 
-  let improved = !existing || body.time < existing.time;
   if (improved) {
     await db
       .prepare(`INSERT INTO runs (player_id, mode, name, time, jumps, perf, sync, replay, created_at, updated_at)
@@ -47,7 +51,7 @@ export async function onRequestPost({ request, env }) {
       .bind(body.mode, REPLAY_SLOTS)
       .run();
   } else {
-    await db.prepare('UPDATE runs SET name = ?1, updated_at = ?2 WHERE player_id = ?3 AND mode = ?4').bind(name, now, playerId, body.mode).run();
+    await db.prepare('UPDATE runs SET name = ?1 WHERE player_id = ?2 AND mode = ?3').bind(name, playerId, body.mode).run();
   }
 
   const best = improved ? { time: body.time, created_at: now } : existing;

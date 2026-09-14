@@ -123,6 +123,8 @@
   .grid label.chk { flex-direction:row; align-items:center; gap:8px; color:#dfe5ea; font-size:13px; grid-column:1 / -1; }
   .grid input[type=number] { background:#0b0d10; color:#e9edf1; border:0; border-radius:4px; padding:7px 8px; font-size:13px; font-family:inherit; }
   .grid input[type=checkbox], .grid input[type=range] { accent-color:var(--accent); }
+  .ghostRow { grid-column:1 / -1; display:flex; align-items:center; gap:10px; font-size:13px; color:#dfe5ea; }
+  .ghostRow .seg button { padding:7px 8px; font-size:12px; }
   .keys { font-size:12px; color:var(--dim); line-height:1.7; margin-top:10px; }
   .hint { font-size:12px; color:var(--dim); margin:14px 0 0; text-align:center; }
   .credit { font-size:10px; color:#5f666f; margin-top:12px; text-align:center; line-height:1.6; }
@@ -215,9 +217,9 @@
         <label class="chk"><input id="o_keys" type="checkbox"> Show A / D sync keys</label>
         <label class="chk"><input id="o_stats" type="checkbox"> Show jump stats</label>
         <label class="chk"><input id="o_knife" type="checkbox"> Show knife</label>
-        <label class="chk"><input id="o_ghost" type="checkbox"> Race your best-run ghost</label>
+        <div class="ghostRow">Ghost <div class="seg"><button id="g_off">Off</button><button id="g_pb">Your PB</button><button id="g_wr">World record</button></div></div>
       </div>
-      <div class="keys">Left click slash · Right click stab · F inspect · H switch hands · C duck · Shift walk · T last checkpoint · N day / night · ` console</div>
+      <div class="keys">Left click slash · Right click stab · F inspect · H switch hands · Shift walk · T last checkpoint · N day / night · ` console</div>
     </details>
     <p class="hint">WASD move · Space jump · R restart · Esc menu</p>
     <div class="credit">Map: bhop_brick by zz9c, CS:S remake by FiBzY · <a href="https://sketchfab.com/3d-models/karambit-dfd7606f189a413681305a39b8841ce8" target="_blank" rel="noopener">Karambit</a> by <a href="https://sketchfab.com/Diamonddogkz" target="_blank" rel="noopener">Diamonddogkz</a> (<a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>)</div>
@@ -260,9 +262,9 @@ const DEFAULTS = {
 // valid ranges; anything outside (e.g. an emptied input box reading as 0) is rejected or clamped
 const LIMITS = {
   fov: [60, 130], sensitivity: [0.01, 50], m_yaw: [0.001, 1], m_pitch: [0.001, 1],
-  volume: [0, 1],
+  volume: [0, 1], cl_ghost: [0, 2],
 };
-const clampCvar = (k, n) => (LIMITS[k] ? Math.min(LIMITS[k][1], Math.max(LIMITS[k][0], n)) : n);
+const clampCvar = (k, n) => { n = LIMITS[k] ? Math.min(LIMITS[k][1], Math.max(LIMITS[k][0], n)) : n; return k === 'cl_ghost' ? Math.round(n) : n; };
 const cv = { ...DEFAULTS };
 try {
   const saved = JSON.parse(localStorage.getItem('bhop_brick_cvars') || '{}');
@@ -546,7 +548,7 @@ sun.shadow.bias = -0.0003; sun.shadow.normalBias = 1.2;
    ===================================================================== */
 const pos = new THREE.Vector3(), prevPos = new THREE.Vector3(), vel = new THREE.Vector3();
 let yaw = 0, pitch = 0, lastTickYaw = 0;
-let ground = null, onGroundLast = false, ducked = false, hullH = 72, viewOff = 64, prevViewOff = 64;
+let ground = null, onGroundLast = false, hullH = 72, viewOff = 64, prevViewOff = 64;
 let noclip = false, wheelJump = 0, oldJump = false;
 const keys = Object.create(null);
 
@@ -586,12 +588,6 @@ function trace(sx, sy, sz, dx, dy, dz, h) {
     TR.ex += TR.nx * EPS; TR.ey += TR.ny * EPS; TR.ez += TR.nz * EPS;
   }
   return TR;
-}
-function fits(x, y, z, h) {
-  for (const b of solids) {
-    if (x + HW > b.min.x && x - HW < b.max.x && y + h > b.min.y && y < b.max.y - 0.01 && z + HW > b.min.z && z - HW < b.max.z) return false;
-  }
-  return true;
 }
 
 function clipVelocity(n, overbounce) {
@@ -687,26 +683,8 @@ function wish() {
   if (wishspeed > 0) { wx /= wishspeed; wz /= wishspeed; }
   let maxspeed = PHYS.sv_maxspeed;
   if (keys.ShiftLeft || keys.ShiftRight) maxspeed *= 0.52;
-  if (ducked && ground) maxspeed *= 0.34;
   if (wishspeed > maxspeed) wishspeed = maxspeed;
   return [wx, wz, wishspeed];
-}
-
-function handleDuck(dt) {
-  const want = !!keys.KeyC;
-  if (want && !ducked) {
-    if (!ground && fits(pos.x, pos.y + 18, pos.z, 54)) { // air duck: pull feet up, head stays
-      pos.y += 18; prevPos.y += 18; viewOff -= 18; prevViewOff -= 18;
-    }
-    ducked = true; hullH = 54;
-  } else if (!want && ducked) {
-    if (!ground && fits(pos.x, pos.y - 18, pos.z, 72)) {
-      pos.y -= 18; prevPos.y -= 18; viewOff += 18; prevViewOff += 18; ducked = false; hullH = 72;
-    } else if (fits(pos.x, pos.y, pos.z, 72)) { ducked = false; hullH = 72; }
-  }
-  const target = ducked ? 46 : 64;
-  viewOff += (target - viewOff) * Math.min(1, dt * 16);
-  if (Math.abs(target - viewOff) < 0.05) viewOff = target;
 }
 
 /* =====================================================================
@@ -767,9 +745,10 @@ function finishRun() {
   const sync = run.syncTotal ? Math.round((100 * run.syncGood) / run.syncTotal) : 0;
   const perf = run.hops ? Math.round((100 * run.perfs) / run.hops) : 0;
   lastFinish = runTime;
-  const diff = prev ? `${runTime - prev < 0 ? '-' : '+'}${Math.abs(runTime - prev).toFixed(3)}` : '';
+  const diff = (other) => `${runTime - other < 0 ? '-' : '+'}${Math.abs(runTime - other).toFixed(3)}`;
+  const wr = cv.cl_ghost === 2 ? wrCache[modeName()] : null;
   toast(`${isPB ? '<span style="color:#e8b04b">NEW PB</span> ' : ''}${fmtTime(runTime)}` +
-    `<small>${prev ? `${diff} vs PB · ` : ''}${run.jumps} jumps · ${perf}% perfect · ${sync}% sync</small>`, 4500);
+    `<small>${prev ? `${diff(prev)} vs PB · ` : ''}${wr && wr.r ? `${diff(wr.time)} vs WR · ` : ''}${run.jumps} jumps · ${perf}% perfect · ${sync}% sync</small>`, 4500);
   sfx.finish();
   countFinishedRun(modeName(), runTime);
 }
@@ -818,7 +797,6 @@ function tick(dt) {
     return;
   }
 
-  handleDuck(dt);
   if (!ground) vel.y -= PHYS.sv_gravity * 0.5 * dt; // StartGravity
 
   if (ground) groundTicks++;
@@ -912,7 +890,7 @@ function zoneCrossing(z) {
 const sfx = (() => {
   let ctx = null, master = null, noiseBuf = null;
   function init() {
-    if (ctx) return;
+    if (ctx) { if (ctx.state === 'suspended') ctx.resume(); return; }
     try {
       ctx = new (window.AudioContext || window.webkitAudioContext)();
       master = ctx.createGain(); master.gain.value = cv.volume; master.connect(ctx.destination);
@@ -959,7 +937,7 @@ const sfx = (() => {
 const REPLAY_PREROLL = 200;         // ticks kept from before leaving the start zone (2s run-up)
 const REPLAY_POSTROLL = 60;         // ticks kept after finishing
 const REPLAY_MAX_TICKS = 60000;     // stop recording after 10 minutes
-const KEYBITS = [['KeyW', 1], ['KeyA', 2], ['KeyS', 4], ['KeyD', 8], ['Space', 16], ['KeyC', 32]];
+const KEYBITS = [['KeyW', 1], ['KeyA', 2], ['KeyS', 4], ['KeyD', 8], ['Space', 16]];
 const rec = { frames: [], base: 0, tick: 0, startTick: -1, startTime: 0, events: [], pending: null };
 const replayCache = {};
 
@@ -1066,10 +1044,17 @@ const ghost = new THREE.Group();
   scene.add(ghost, ghost.trail);
 }
 const _gs = {};
+function ghostReplay() {
+  if (cv.cl_ghost === 1) return getReplay();
+  if (cv.cl_ghost === 2) { const wr = worldRecord(); return wr ? wr.r : null; }
+  return null;
+}
 function updateGhost() {
-  const r = cv.cl_ghost && playing && !watching && runState === 'running' ? getReplay() : null;
+  const r = playing && !watching && runState === 'running' ? ghostReplay() : null;
   ghost.visible = ghost.trail.visible = !!r;
   if (!r) return;
+  const color = cv.cl_ghost === 2 ? 0xe8b04b : 0x5b9bff;
+  if (ghost.body.material.color.getHex() !== color) { ghost.body.material.color.setHex(color); ghost.trail.material.color.setHex(color); }
   const t = runTime + acc;
   sampleReplay(r, t, _gs);
   ghost.position.set(_gs.x, _gs.y, _gs.z);
@@ -1089,6 +1074,7 @@ const _ws = {};
 function startWatching(r = getReplay(), label = null) {
   if (!r) return;
   watching = true; view.r = r; view.t = r.tMin; view.speed = 1; view.paused = false;
+  sfx.init();
   menu.hidden = true; $('replayBar').hidden = false;
   resetRun(); vmDraw(); jumpLog = []; renderJumpList();
   $('rbLabel').textContent = label || `${r.mode === 'auto' ? 'Autohop' : 'Scroll'} · your best run ${fmtTime(r.time)}`;
@@ -1130,8 +1116,15 @@ function updateReplayView(dt) {
   if (view.t > prevT) for (const e of r.events) {
     const te = r.eventTime(e.tick);
     if (te <= prevT || te > view.t) continue;
-    if (e.type === 'jump') rebuildReplayHud();
+    if (e.type === 'jump') { rebuildReplayHud(); sfx.jump(); }
     else if (vmReady()) { playClip(e.clip); if (e.clip !== 'inspect') sfx.swish(e.clip === 'stab'); }
+  }
+  // landings aren't recorded: a tick that was falling and then stops falling
+  if (view.t > prevT) {
+    const tickAt = (t) => Math.floor(r.startIdx + (t - r.startTime) / r.dt);
+    for (let i = Math.max(2, tickAt(prevT) + 1), end = Math.min(r.n - 2, tickAt(view.t)); i <= end; i++) {
+      if (r.y[i - 1] - r.y[i] > 1 && r.y[i + 1] >= r.y[i] - 0.2) sfx.land(Math.min(1, r.speed[i - 1] / 600));
+    }
   }
   $('rbFill').style.width = `${((view.t - r.tMin) / (r.tMax - r.tMin)) * 100}%`;
   $('rbSpeed').textContent = view.paused ? (view.t >= r.tMax ? 'end' : 'paused') : `${view.speed}×`;
@@ -1190,11 +1183,13 @@ function countFinishedRun(mode, time) {
 function lbStatus(text, kind = '') { const el = $('lbStatus'); el.textContent = text; el.className = 'lb-status' + (kind ? ' ' + kind : ''); }
 const rawReplay = (r) => ({ v: r.v, mode: r.mode, time: r.time, date: r.date, n: r.n, startIdx: r.startIdx, startTime: r.startTime, events: r.events, b64: r.b64 });
 
-async function submitToLeaderboard(saved, sync, { quiet = false } = {}) {
+async function submitToLeaderboard(saved, sync, { quiet = false, retry = true } = {}) {
   if (!LB_ONLINE || saved.time < 3) return;
   if (!validName(playerName())) { lbState.pending = { saved, sync }; lbStatus('Set a name above to post your best run'); if (!quiet) toastLine('Set a name in Leaderboard to post this PB'); return; }
   lbState.pending = null;
+  lbSynced.add(saved.mode + saved.time);
   lbStatus(`Posting ${saved.mode === 'auto' ? 'Autohop' : 'Scroll'} ${fmtTime(saved.time)}…`);
+  lbState.posting = true;
   try {
     const body = JSON.stringify({ name: playerName().trim(), token: playerToken(), mode: saved.mode, time: saved.time, sync, replay: saved });
     const res = await fetch(apiUrl('runs'), { method: 'POST', headers: { 'content-type': 'application/json' }, keepalive: body.length < 60000, body });
@@ -1202,21 +1197,47 @@ async function submitToLeaderboard(saved, sync, { quiet = false } = {}) {
     if (res.ok) {
       const text = data.improved ? `Posted ${fmtTime(saved.time)} · #${data.rank}` : `Leaderboard best stays ${fmtTime(data.time)} (#${data.rank})`;
       lbStatus(text, 'good'); if (!quiet) toastLine(`Leaderboard: <b>#${data.rank}</b>`);
+      if (data.improved && data.rank === 1 && wrCache[saved.mode]) wrCache[saved.mode].checked = 0;
+    } else if (res.status === 429 && retry) {
+      lbStatus('Posting again in a few seconds…');
+      setTimeout(() => submitToLeaderboard(saved, sync, { quiet, retry: false }), 5500);
     } else if (res.status !== 503) {
-      lbStatus(`Not posted: ${data.error || 'submit failed'}`, 'bad'); if (!quiet) toastLine(`Leaderboard: ${escapeHtml(data.error || 'submit failed')}`);
+      const error = data.error || `server error (${res.status})`;
+      lbStatus(`Not posted: ${error}`, 'bad'); if (!quiet) toastLine(`Leaderboard: ${escapeHtml(error)}`);
     }
     if (!$('lb').hidden) loadLeaderboard();
   } catch { lbStatus('Could not reach the leaderboard; your PB is still saved', 'bad'); }
+  finally { lbState.posting = false; }
 }
 
 // if this browser has a faster saved run than the server knows about (e.g. a PB that never got sent), send it
 const lbSynced = new Set();
 function syncLocalBest(mode, me) {
   const r = getReplay(mode);
-  if (!r || r.time < 3 || lbSynced.has(mode + r.time)) return;
+  if (!r || r.time < 3 || lbState.posting || lbSynced.has(mode + r.time)) return;
   if (me && me.time != null && me.time <= r.time + 1e-6) return;
-  lbSynced.add(mode + r.time);
   return submitToLeaderboard(rawReplay(r), null, { quiet: true });
+}
+
+// world record ghost: the #1 run for a mode, checked again at most once a minute while racing it
+const wrCache = {};
+function worldRecord(mode = modeName()) {
+  if (!LB_ONLINE) return null;
+  const c = wrCache[mode] || (wrCache[mode] = { r: null, id: null, time: null, name: '', checked: 0, loading: false });
+  if (!c.loading && Date.now() - c.checked > 60000) loadWorldRecord(mode, c);
+  return c.r ? c : null;
+}
+async function loadWorldRecord(mode, c) {
+  c.loading = true; c.checked = Date.now();
+  try {
+    const res = await fetch(apiUrl(`leaderboard?mode=${mode}`));
+    const top = res.ok ? (await res.json()).rows[0] : null;
+    if (!top || !top.replay) { c.r = null; return; }
+    if (c.r && top.id === c.id && top.time === c.time) return;
+    const rr = await fetch(apiUrl(`replay?mode=${mode}&id=${top.id}`));
+    const data = await rr.json();
+    if (rr.ok) Object.assign(c, { r: decodeReplay(data.replay), id: top.id, time: data.time, name: data.name });
+  } catch {} finally { c.loading = false; }
 }
 
 async function loadLeaderboard() {
@@ -1229,6 +1250,8 @@ async function loadLeaderboard() {
     if (mode !== lbState.mode) return; // switched tabs while loading
     if (!res.ok) { list.innerHTML = `<div class="lb-empty">${res.status === 503 ? 'Leaderboard is not set up yet.' : escapeHtml(data.error || 'Could not load the leaderboard.')}</div>`; return; }
     lbState.rows = data.rows;
+    const wc = wrCache[mode], top = data.rows[0];
+    if (wc && top && (top.id !== wc.id || top.time !== wc.time)) wc.checked = 0;
     const head = '<div class="lb-row lb-headrow"><span style="text-align:left">RANK</span><span>NAME</span><span>TIME</span><span>PERF</span><span>RUNS</span><span></span></div>';
     list.innerHTML = data.rows.length ? head + data.rows.map((r) => `
       <div class="lb-row${data.me && data.me.id === r.id ? ' me' : ''}">
@@ -1339,7 +1362,8 @@ function updateHUD() {
   const pb = loadPB()[pbKey()];
   const status = noclip ? 'NOCLIP' : runState === 'start' ? '<span class="zone">START</span>' : runState === 'finished' ? '<span class="done">FINISHED</span>'
     : runState === 'invalid' ? 'INVALID' : checkpoint ? `CP ${checkpoint}` : '';
-  const subText = [status, pb ? `PB ${fmtTime(pb)}` : ''].filter(Boolean).join(' · ');
+  const wr = cv.cl_ghost === 2 ? wrCache[modeName()] : null;
+  const subText = [status, pb ? `PB ${fmtTime(pb)}` : '', wr && wr.r ? `WR ${fmtTime(wr.time)} ${escapeHtml(wr.name)}` : ''].filter(Boolean).join(' · ');
   if (subText !== lastPBText) { H.sub.innerHTML = subText; lastPBText = subText; }
   const jl = jumpLog[0], jInfo = jl && jl.perf != null ? hopLabel(jl) : '';
   if (H.jumpInfo._v !== jInfo) { H.jumpInfo.innerHTML = jInfo; H.jumpInfo._v = jInfo; }
@@ -1381,7 +1405,10 @@ const menu = $('menu');
 
 function syncMenu() {
   $('o_sens').value = cv.sensitivity; $('o_fov').value = cv.fov; $('o_vol').value = cv.volume;
-  $('o_keys').checked = !!cv.cl_showkeys; $('o_stats').checked = !!cv.cl_showstats; $('o_knife').checked = !!cv.cl_showknife; $('o_ghost').checked = !!cv.cl_ghost;
+  $('o_keys').checked = !!cv.cl_showkeys; $('o_stats').checked = !!cv.cl_showstats; $('o_knife').checked = !!cv.cl_showknife;
+  $('g_off').classList.toggle('sel', !cv.cl_ghost); $('g_pb').classList.toggle('sel', cv.cl_ghost === 1); $('g_wr').classList.toggle('sel', cv.cl_ghost === 2);
+  $('g_wr').hidden = !LB_ONLINE;
+  if (cv.cl_ghost === 2) worldRecord();
   const rp = getReplay(), wb = $('watch');
   wb.disabled = !rp; wb.textContent = rp ? `WATCH BEST RUN · ${fmtTime(rp.time)}` : 'NO REPLAY YET · SET A PB';
   $('m_auto').classList.toggle('sel', !!cv.sv_autobunnyhopping); $('m_scroll').classList.toggle('sel', !cv.sv_autobunnyhopping);
@@ -1409,7 +1436,7 @@ $('t_day').addEventListener('click', () => setCvar('cl_night', 0));
 $('t_night').addEventListener('click', () => setCvar('cl_night', 1));
 $('o_keys').addEventListener('change', (e) => setCvar('cl_showkeys', e.target.checked ? 1 : 0));
 $('o_stats').addEventListener('change', (e) => setCvar('cl_showstats', e.target.checked ? 1 : 0));
-$('o_ghost').addEventListener('change', (e) => setCvar('cl_ghost', e.target.checked ? 1 : 0));
+for (const [id, v] of [['g_off', 0], ['g_pb', 1], ['g_wr', 2]]) $(id).addEventListener('click', () => setCvar('cl_ghost', v));
 $('watch').addEventListener('click', () => startWatching());
 $('o_knife').addEventListener('change', (e) => { setCvar('cl_showknife', e.target.checked ? 1 : 0); if (cv.cl_showknife) vmDraw(); });
 $('o_vol').addEventListener('input', (e) => setCvar('volume', e.target.value));
@@ -1438,7 +1465,7 @@ addEventListener('mousemove', (e) => {
   pitch = Math.max(-89 * DEG, Math.min(89 * DEG, pitch + my * cv.sensitivity * cv.m_pitch * DEG));
   mouseAcc += mx;
 });
-addEventListener('wheel', (e) => { if (playing) { wheelJump = 1; e.preventDefault(); } }, { passive: false });
+addEventListener('wheel', (e) => { if (playing) { e.preventDefault(); if (!cv.sv_autobunnyhopping) wheelJump = 1; } }, { passive: false });
 addEventListener('mousedown', (e) => {
   if (!playing || (e.button !== 0 && e.button !== 2)) return;
   mouseHeld[e.button] = true;
