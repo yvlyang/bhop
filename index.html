@@ -202,13 +202,14 @@
       <summary>Settings</summary>
       <div class="grid">
         <label>Sensitivity <input id="o_sens" type="number" step="0.05" min="0.05"></label>
-        <label>m_yaw <input id="o_yaw" type="number" step="0.001" min="0.001" max="1" placeholder="0.022"></label>
         <label>FOV <input id="o_fov" type="number" step="1" min="60" max="130"></label>
-        <label>Volume <input id="o_vol" type="range" min="0" max="1" step="0.05"></label>
+        <label>m_yaw <input id="o_yaw" type="number" step="0.001" min="0.001" max="1" placeholder="0.022"></label>
+        <label>m_pitch <input id="o_pitch" type="number" step="0.001" min="0.001" max="1" placeholder="0.022"></label>
+        <label style="grid-column:1 / -1">Volume <input id="o_vol" type="range" min="0" max="1" step="0.05"></label>
         <label class="chk"><input id="o_keys" type="checkbox"> Show A / D sync keys</label>
         <label class="chk"><input id="o_stats" type="checkbox"> Show jump stats</label>
         <label class="chk"><input id="o_knife" type="checkbox"> Show knife <span class="note">(prototype)</span></label>
-        <div class="ghostRow">Ghost <div class="seg"><button id="g_off">Off</button><button id="g_pb">Your PB</button><button id="g_wr">World record</button></div></div>
+        <div class="ghostRow">Ghost <div class="seg"><button id="g_off">Off</button><button id="g_pb">PB</button><button id="g_wr">World record</button></div></div>
       </div>
       <div class="keys">Left click slash · Right click stab · F inspect · H switch hands · Shift walk · T last checkpoint · N day / night · ` console</div>
     </details>
@@ -1430,7 +1431,7 @@ let playing = false, consoleOpen = false;
 const menu = $('menu');
 
 function syncMenu() {
-  $('o_sens').value = cv.sensitivity; $('o_yaw').value = cv.m_yaw; $('o_fov').value = cv.fov; $('o_vol').value = cv.volume;
+  $('o_sens').value = cv.sensitivity; $('o_yaw').value = cv.m_yaw; $('o_pitch').value = cv.m_pitch; $('o_fov').value = cv.fov; $('o_vol').value = cv.volume;
   $('o_keys').checked = !!cv.cl_showkeys; $('o_stats').checked = !!cv.cl_showstats; $('o_knife').checked = !!cv.cl_showknife;
   $('g_off').classList.toggle('sel', !cv.cl_ghost); $('g_pb').classList.toggle('sel', cv.cl_ghost === 1); $('g_wr').classList.toggle('sel', cv.cl_ghost === 2);
   $('g_wr').hidden = !LB_ONLINE;
@@ -1458,6 +1459,7 @@ $('m_auto').addEventListener('click', () => setCvar('sv_autobunnyhopping', 1));
 $('m_scroll').addEventListener('click', () => setCvar('sv_autobunnyhopping', 0));
 $('o_sens').addEventListener('change', (e) => setCvar('sensitivity', e.target.value));
 $('o_yaw').addEventListener('change', (e) => setCvar('m_yaw', e.target.value));
+$('o_pitch').addEventListener('change', (e) => setCvar('m_pitch', e.target.value));
 $('o_fov').addEventListener('change', (e) => setCvar('fov', e.target.value));
 $('t_day').addEventListener('click', () => setCvar('cl_night', 0));
 $('t_night').addEventListener('click', () => setCvar('cl_night', 1));
