@@ -1,11 +1,11 @@
 // GET /api/leaderboard?mode=auto  → top 100 for a mode (+ your own rank if you send x-player-token)
-import { BOARD_SIZE, boardKey, ensureSchema, json, noDatabase, playerIdFromToken, publicId, rankOf } from '../../lib/leaderboard.js';
+import { BOARD_SIZE, boardKey, canonicalMap, ensureSchema, json, noDatabase, playerIdFromToken, publicId, rankOf } from '../../lib/leaderboard.js';
 
 export async function onRequestGet({ request, env }) {
   const db = env.DB;
   if (!db) return noDatabase();
   const params = new URL(request.url).searchParams;
-  const map = params.get('map') ?? 'bhop_brick', requestedMode = params.get('mode');
+  const map = canonicalMap(params.get('map') ?? 'bhop_brick'), requestedMode = params.get('mode');
   const mode = boardKey(map, requestedMode);
   if (!mode) return json({ error: 'unknown map or mode' }, 400);
   await ensureSchema(db);
