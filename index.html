@@ -693,7 +693,7 @@ function wish() {
    ===================================================================== */
 let checkpoint = 0;
 
-let runState = 'start', runTime = 0, lastFinish = null;
+let runState = 'start', runTime = 0, lastFinish = null, leftStart = false;
 const run = { jumps: 0, strafes: 0, syncGood: 0, syncTotal: 0, maxSpeed: 0, perfs: 0, hops: 0 };
 const seg = { syncGood: 0, syncTotal: 0 };
 let lastStrafe = 0, jumpLog = [], lastJumpSpeed = 0;
@@ -718,6 +718,7 @@ function teleportTo(dest, fx = true) {
 function restart() { checkpoint = 0; teleportTo(spawn, true); resetRun(); runState = 'start'; vmDraw(); }
 function resetRun() {
   flushReplaySave();
+  rec.events.length = 0;
   runTime = 0; Object.assign(run, { jumps: 0, strafes: 0, syncGood: 0, syncTotal: 0, maxSpeed: 0, perfs: 0, hops: 0 });
   jumpLog = []; renderJumpList();
 }
@@ -804,7 +805,12 @@ function tick(dt) {
 
   // CheckJumpButton: autohop skips the "jump was already held" check
   let jumped = false;
-  if (jumpHeld && ground && (cv.sv_autobunnyhopping || !oldJump)) { doJump(); jumped = true; }
+  // the timer starts on the first jump, so speed can't be built inside the start zone
+  let startedThisTick = false;
+  if (jumpHeld && ground && (cv.sv_autobunnyhopping || !oldJump)) {
+    if (runState === 'start') { startRun(dt); startedThisTick = true; }
+    doJump(); jumped = true;
+  }
   oldJump = jumpHeld;
 
   if (ground) { vel.y = 0; friction(dt); }
@@ -854,21 +860,27 @@ function tick(dt) {
   for (const t of teleports) if (pos.y <= FLOOR_Y + 0.5 && overlaps(t)) { if (runState === 'running') runTime += dt; teleportTo(t.dest); return; }
 
   // --- timer (sub-tick: start/finish are placed at the exact moment inside this tick you crossed the line) ---
-  if (overlaps(startZone)) {
+  const inStart = overlaps(startZone);
+  if (inStart && !(runState === 'running' && !leftStart)) { // coming back to the start zone resets the run
     if (runState !== 'start') resetRun();
     runState = 'start'; runTime = 0;
-  } else if (runState === 'start') {
+  } else if (runState === 'start') { // walked out without jumping
     const cross = zoneCrossing(startZone);
-    runState = 'running'; runTime = (1 - (cross ? cross[1] : 0)) * dt; // only the part of the tick after leaving the zone
-    rec.startTick = rec.tick; rec.startTime = runTime;
+    startRun((1 - (cross ? cross[1] : 0)) * dt); // only the part of the tick after leaving the zone
+    leftStart = true;
     if (overlaps(endZone)) finishRun();
   } else if (runState === 'running') {
+    if (!inStart) leftStart = true;
     if (overlaps(endZone)) {
       const cross = zoneCrossing(endZone);
-      runTime += (cross ? cross[0] : 1) * dt; // only the part of the tick before entering the zone
+      runTime = (startedThisTick ? 0 : runTime) + (cross ? cross[0] : 1) * dt; // only the part of the tick before entering the zone
       finishRun();
-    } else runTime += dt;
+    } else if (!startedThisTick) runTime += dt;
   }
+}
+function startRun(time) {
+  runState = 'running'; runTime = time; leftStart = false;
+  rec.startTick = rec.tick; rec.startTime = time;
 }
 
 // When during this tick (0..1, along prevPos -> pos) the player's hull overlaps zone z: [enter, leave], or null.
@@ -1203,7 +1215,7 @@ async function submitToLeaderboard(saved, sync, { quiet = false, retry = true } 
       setTimeout(() => submitToLeaderboard(saved, sync, { quiet, retry: false }), 5500);
     } else if (res.status !== 503) {
       const error = data.error || `server error (${res.status})`;
-      lbStatus(`Not posted: ${error}`, 'bad'); if (!quiet) toastLine(`Leaderboard: ${escapeHtml(error)}`);
+      if (quiet) lbStatus(''); else { lbStatus(`Not posted: ${error}`, 'bad'); toastLine(`Leaderboard: ${escapeHtml(error)}`); }
     }
     if (!menu.hidden) loadLeaderboard();
   } catch { lbStatus('Could not reach the leaderboard; your PB is still saved', 'bad'); }
