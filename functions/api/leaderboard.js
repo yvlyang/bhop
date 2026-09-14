@@ -1,4 +1,4 @@
-// GET /api/leaderboard?mode=auto  → top 50 for a mode (+ your own rank if you send x-player-token)
+// GET /api/leaderboard?mode=auto  → top 100 for a mode (+ your own rank if you send x-player-token)
 import { BOARD_SIZE, MODES, ensureSchema, json, noDatabase, playerIdFromToken, publicId, rankOf } from '../../lib/leaderboard.js';
 
 export async function onRequestGet({ request, env }) {
