@@ -1,4 +1,5 @@
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { createMapBridge } from './map-bridge.js';
 
 export function startEditor({ THREE, renderer, map }) {
   const clone = value => structuredClone(value);
@@ -70,9 +71,17 @@ export function startEditor({ THREE, renderer, map }) {
   const draftKey = `kz-editor-${hash >>> 0}`;
   try { saved = localStorage.getItem(draftKey) || ''; draftAvailable = !!saved; } catch {}
   const current = id => edits[id] || { offset: [0, 0, 0], color: null, deleted: false };
+  const bridge = createMapBridge({ THREE, map, pieces, current, sourceHash: hash >>> 0 });
+  const bridgePanel = document.createElement('section');
+  bridgePanel.innerHTML = '<hr><h2>Three.js editor</h2><div class="row"><button id="ed-scene-export">Export scene</button><button id="ed-scene-import">Import scene</button></div><input id="ed-scene-file" type="file" accept=".json,application/json" hidden><small>Export scene → File / Import in threejs.org/editor → edit → File / Save (project.json) → Import scene here → Export map.</small><small>Move, rotate, scale, recolor or delete existing parts. Do not add or duplicate objects, edit geometry, change opacity, or edit LOCKED ladders. Scene colors are simplified for editing; original mixed colors are preserved unless recolored. Lights and cameras are not imported.</small>';
+  panel.append(bridgePanel);
   const update = () => {
     for (const p of pieces) {
       const e = current(p.id); p.mesh.visible = !e.deleted; p.mesh.position.set(...xyz(e.offset));
+      const position = p.mesh.geometry.getAttribute('position'); let at = 0;
+      const vertices = e.vertices || p.vertices;
+      for (const face of p.faces) for (let k = 1; k < face.ids.length - 1; k++) for (const id of [face.ids[0], face.ids[k], face.ids[k + 1]]) position.setXYZ(at++, ...xyz(vertices[id]));
+      position.needsUpdate = true; p.mesh.geometry.computeVertexNormals(); p.mesh.geometry.computeBoundingSphere(); p.mesh.geometry.computeBoundingBox();
       const attr = p.mesh.geometry.getAttribute('color');
       if (e.color) { const c = new THREE.Color(e.color); for (let i = 0; i < attr.count; i++) attr.setXYZ(i, c.r, c.g, c.b); } else attr.array.set(p.originalColors);
       attr.needsUpdate = true;
@@ -103,13 +112,13 @@ export function startEditor({ THREE, renderer, map }) {
   $('move').onclick = () => apply((e, p) => {
     const delta = ['X', 'Y', 'Z'].map(a => Number($(a).value)); if (delta.some(n => !Number.isFinite(n))) throw Error('Enter a valid number for each axis.');
     e.offset = e.offset.map((n, a) => Math.round((n + delta[a]) * map.quant) / map.quant);
-    if (p.vertices.some(v => v.some((n, a) => { const q = Math.round((n + e.offset[a] - map.origin[a]) * map.quant); return q < -32768 || q > 32767; }))) throw Error('That move exceeds the map coordinate range. Try a smaller move.');
+    if ((e.vertices || p.vertices).some(v => v.some((n, a) => { const q = Math.round((n + e.offset[a] - map.origin[a]) * map.quant); return q < -32768 || q > 32767; }))) throw Error('That move exceeds the map coordinate range. Try a smaller move.');
   });
   $('paint').onclick = () => apply(e => { e.color = $('color').value; });
   $('delete').onclick = () => { const large = [...selected].some(p => !p.locked && p.mi !== undefined && p.faces.length > 100); if (large && !confirm('This selection includes a large connected mesh, possibly a whole building. Delete it? Undo will restore it.')) return; apply(e => { e.deleted = true; }); };
   $('undo').onclick = () => { if (history.length) { future.push(clone(edits)); edits = history.pop(); persist(); update(); } };
   $('redo').onclick = () => { if (future.length) { history.push(clone(edits)); edits = future.pop(); persist(); update(); } };
-  $('restore').onclick = () => { if (draftAvailable) { try { const restored = JSON.parse(saved); if (Object.entries(restored).some(([id, e]) => !pieces.some(p => p.id === id && !p.locked) || !Array.isArray(e.offset) || e.offset.length !== 3 || e.offset.some(n => !Number.isFinite(n)) || (e.color !== null && !/^#[0-9a-f]{6}$/i.test(e.color)) || typeof e.deleted !== 'boolean')) throw Error(); change(() => { edits = restored; }); } catch { status('Could not restore this draft. The original map is unchanged.'); } } };
+  $('restore').onclick = () => { if (draftAvailable) { try { const restored = JSON.parse(saved); if (Object.entries(restored).some(([id, e]) => !pieces.some(p => p.id === id && !p.locked) || !Array.isArray(e.offset) || e.offset.length !== 3 || e.offset.some(n => !Number.isFinite(n)) || (e.color !== null && !/^#[0-9a-f]{6}$/i.test(e.color)) || typeof e.deleted !== 'boolean')) throw Error(); for (const [id, e] of Object.entries(restored)) { const p = pieces.find(p => p.id === id); bridge.validateVertices(p, e.vertices || p.vertices); bridge.validateVertices(p, (e.vertices || p.vertices).map(v => v.map((n, a) => n + e.offset[a]))); } change(() => { edits = restored; }); } catch { status('Could not restore this draft. The original map is unchanged.'); } } };
   $('reset').onclick = () => { if (confirm('Discard all local edits? You can undo this until you close the editor.')) change(() => { edits = {}; }); };
   const exportMap = () => {
     const result = clone(map), hulls = [];
@@ -117,7 +126,7 @@ export function startEditor({ THREE, renderer, map }) {
     for (const p of pieces.filter(p => p.raw)) {
       const e = current(p.id); if (e.deleted) continue;
       const data = p.raw.slice(), view = new DataView(data.buffer); view.setUint16(2, paletteIndex(p.faces[0].palette, e.color), true);
-      p.vertices.forEach((v, i) => v.forEach((n, a) => view.setInt16(4 + i * 6 + a * 2, Math.round((n + e.offset[a] - map.origin[a]) * map.quant), true))); hulls.push(data);
+      (e.vertices || p.vertices).forEach((v, i) => v.forEach((n, a) => view.setInt16(4 + i * 6 + a * 2, Math.round((n + e.offset[a] - map.origin[a]) * map.quant), true))); hulls.push(data);
     }
     const joined = new Uint8Array(hulls.reduce((s, b) => s + b.length, 0)); let offset = 0; hulls.forEach(b => { joined.set(b, offset); offset += b.length; }); result.hulls = base64(joined); result.hullCount = hulls.length;
     result.meshes = map.meshes.map((m, mi) => {
@@ -125,7 +134,7 @@ export function startEditor({ THREE, renderer, map }) {
       const verts = [], tris = [];
       for (const p of groups) {
         const e = current(p.id); if (e.deleted) continue; const base = verts.length;
-        p.vertices.forEach(v => verts.push(v.map((n, a) => Math.round((n + e.offset[a] - map.origin[a]) * map.quant))));
+        (e.vertices || p.vertices).forEach(v => verts.push(v.map((n, a) => Math.round((n + e.offset[a] - map.origin[a]) * map.quant))));
         p.faces.forEach(f => tris.push([...f.ids.map(i => i + base), paletteIndex(f.palette, e.color)]));
       }
       const vb = new Uint8Array(verts.length * 6), tb = new Uint8Array(tris.length * 8), vv = new DataView(vb.buffer), tv = new DataView(tb.buffer);
@@ -135,6 +144,19 @@ export function startEditor({ THREE, renderer, map }) {
     return result;
   };
   $('export').onclick = () => { const blob = new Blob([JSON.stringify(exportMap()) + '\n'], { type: 'application/json' }), url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = 'kz_hub.json'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); status('Export downloaded. Your live map has not changed.'); };
+  $('scene-export').onclick = () => { const blob = new Blob([JSON.stringify(bridge.exportScene())], { type: 'application/json' }), url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = 'kz_hub.scene.json'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); status('Scene downloaded. Import it at threejs.org/editor.'); };
+  $('scene-import').onclick = () => $('scene-file').click();
+  $('scene-file').onchange = async () => {
+    const file = $('scene-file').files[0]; $('scene-file').value = ''; if (!file) return;
+    try {
+      if (file.size > 32 * 1024 * 1024) throw Error('Scene is too large. Use the original scene without new assets.');
+      const imported = bridge.importScene(JSON.parse(await file.text()));
+      const removed = Object.values(imported).filter(e => e.deleted).length;
+      if (!confirm(`Replace your local edits with this scene? ${removed} parts deleted. You can Undo the import. Nothing is published.`)) return;
+      change(() => { edits = imported; });
+      status('Scene imported locally. Check the map, then Export map. Nothing is published.');
+    } catch (e) { status(`Import rejected: ${e.message}`); }
+  };
   const raycaster = new THREE.Raycaster();
   canvas.addEventListener('click', e => {
     const rect = canvas.getBoundingClientRect(); raycaster.setFromCamera(new THREE.Vector2((e.clientX - rect.left) / rect.width * 2 - 1, -(e.clientY - rect.top) / rect.height * 2 + 1), camera);
