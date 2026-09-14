@@ -785,6 +785,21 @@ function partTexture(kind) {
   const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = maxAniso; t.colorSpace = THREE.NoColorSpace;
   return t;
 }
+function chainTexture() {
+  const S = 256, [c, g] = cnv(S, S), img = g.createImageData(S, S), d = img.data, P = 32;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const m = (v) => { const r = ((v % P) + P) % P; return Math.min(r, P - r); };
+    const a = m(x + y + 0.5), b = m(x - y + 0.5), w = Math.min(a, b);
+    const cover = Math.max(0, Math.min(1, 2.6 - w));
+    const knot = a < 3 && b < 3 ? 0.12 : 0;
+    const lit = 0.78 + 0.22 * (a < b ? 1 - a / 3 : 1 - b / 3) + knot;
+    const i = (y * S + x) * 4;
+    d[i] = d[i + 1] = d[i + 2] = Math.round(255 * Math.min(1, lit)); d[i + 3] = Math.round(255 * cover);
+  }
+  g.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = maxAniso;
+  return t;
+}
 const PART_TILE = 64;
 function buildParts(parts) {
   const groups = {}, hsl = {};
@@ -843,7 +858,7 @@ function buildParts(parts) {
     crate: std(partTexture('crate'), 0.5, 0.15), wall: std(partTexture('wall'), 0.65), stripe: std(null, 0.5), floor: std(partTexture('floor'), 0.9),
     ledge: std(partTexture('ledge'), 0.85), roof: std(partTexture('roof'), 0.8), steel: std(partTexture('steel'), 0.45, 0.35), wood: std(partTexture('wood'), 0.75),
     grate: std(partTexture('grate'), 0.5),
-    glass: new THREE.MeshStandardMaterial({ color: 0xbfd9e6, roughness: 0.1, metalness: 0, transparent: true, opacity: 0.18, depthWrite: false, side: THREE.DoubleSide }),
+    glass: new THREE.MeshStandardMaterial({ color: 0xaab2b8, map: chainTexture(), roughness: 0.5, metalness: 0.4, transparent: true, depthWrite: false }),
     neon: new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false }),
   };
   const bounds = new THREE.Box3(), meshes = [];
@@ -851,7 +866,8 @@ function buildParts(parts) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(G.pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(G.nrm, 3));
-    if (kind !== 'glass') { g.setAttribute('color', new THREE.Float32BufferAttribute(G.col, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(G.uv, 2)); }
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(G.uv, 2));
+    if (kind !== 'glass') g.setAttribute('color', new THREE.Float32BufferAttribute(G.col, 3));
     const mesh = new THREE.Mesh(g, mats[kind]);
     mesh.name = `parts_${kind}`;
     mesh.castShadow = kind !== 'glass' && kind !== 'neon'; mesh.receiveShadow = kind !== 'neon';
