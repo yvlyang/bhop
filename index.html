@@ -2099,7 +2099,7 @@ addEventListener('keydown', (e) => {
   if (e.code === 'Backquote') { e.preventDefault(); toggleConsole(); return; }
   if (watching && !consoleOpen) { replayKey(e); return; }
   if (consoleOpen || !playing) return;
-  if (e.code === 'Space' || e.code === 'Tab' || e.code === 'ControlLeft' || e.code === 'ControlRight') e.preventDefault();
+  if (e.code === 'Space' || e.code === 'Tab' || e.ctrlKey || e.metaKey) e.preventDefault();
   keys[e.code] = true;
   if (e.repeat) return;
   if (e.code === 'KeyR') restart();
