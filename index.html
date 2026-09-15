@@ -2074,6 +2074,7 @@ document.addEventListener('pointerlockchange', () => {
   if (locked) $('err').textContent = '';
   if (!locked) { for (const k in keys) keys[k] = false; flushReplaySave(); syncMenu(); showLeaderboard(); }
 });
+addEventListener('beforeunload', (e) => { if (playing) { e.preventDefault(); e.returnValue = ''; } });
 
 addEventListener('mousemove', (e) => {
   if (!playing) return;
