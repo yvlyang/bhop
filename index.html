@@ -42,6 +42,7 @@
   #jumpList .j span:last-child { text-align:right; }
   .perf { color:#6fe07a; } .late { color:#ff6b6b; }
   .up { color:#6fe07a; } .down { color:#ff6b6b; }
+  #fpsBox { position:absolute; right:14px; top:10px; font:600 13px ui-monospace,Menlo,monospace; color:#fff; }
   #showpos { position:absolute; right:14px; top:10px; font:12px ui-monospace,Menlo,monospace; text-align:right; white-space:pre; color:#fff; }
   #toast { position:absolute; left:50%; top:30%; transform:translateX(-50%); font-size:22px; font-weight:600;
     opacity:0; transition:opacity .3s; text-align:center; white-space:nowrap; }
@@ -125,6 +126,7 @@
   .group { background:rgba(255,255,255,.035); border:1px solid var(--line); border-radius:8px; padding:8px 11px 11px;
     display:flex; flex-direction:column; justify-content:space-between; gap:6px; min-width:0; }
   .group.wide { grid-column:1 / -1; }
+  .group.top { justify-content:flex-start; }
   .group .head { display:flex; align-items:center; gap:10px; height:22px; }
   .group h3 { margin:0 auto 0 0; font-size:10px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:var(--dim); }
   .fields { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
@@ -195,6 +197,7 @@
   <div id="showkeys"><b id="skL"><svg viewBox="0 0 10 10" width="11" height="11" aria-hidden="true"><path d="M8 1 2 5l6 4z" fill="currentColor"/></svg></b><b id="skA">A</b><b id="skD">D</b><b id="skR"><svg viewBox="0 0 10 10" width="11" height="11" aria-hidden="true"><path d="M2 1l6 4-6 4z" fill="currentColor"/></svg></b></div>
   <div id="stats" hidden><div id="runStats" class="num"></div><div id="jumpList"></div></div>
   <div id="showpos"></div>
+  <div id="fpsBox" class="num"></div>
   <div id="toast"></div>
 </div>
 <div id="fade"></div>
@@ -247,7 +250,7 @@
             <label class="span3">Camera <span class="seg"><button id="c_smooth">Smooth</button><button id="c_snappy">Snappy</button></span></label>
           </div>
         </section>
-        <section class="group">
+        <section class="group top">
           <div class="head"><h3>Race ghost</h3></div>
           <div class="seg"><button id="g_off">Off</button><button id="g_pb">PB</button><button id="g_wr">WR</button></div>
         </section>
@@ -257,6 +260,7 @@
             <label class="chk"><input id="o_xh" type="checkbox"> Crosshair</label>
             <label class="chk"><input id="o_keys" type="checkbox"> A / D sync keys</label>
             <label class="chk"><input id="o_stats" type="checkbox"> Jump stats</label>
+            <label class="chk"><input id="o_fps" type="checkbox"> FPS</label>
             <label class="chk"><input id="o_knife" type="checkbox"> Knife <span class="note">(prototype)</span></label>
           </div>
         </section>
@@ -332,7 +336,7 @@ if (IS_KZ) Object.assign(PHYS, { sv_airaccelerate: 100, sv_accelerate: 6.5, sv_f
 const DEFAULTS = {
   sv_autobunnyhopping: 1, sensitivity: 1.5, m_yaw: 0.022, m_pitch: 0.022, fov: 90,
   volume: 0.5,
-  cl_smoothcam: 1,
+  cl_smoothcam: 1, cl_showfps: 0,
   cl_showpos: 0, cl_showkeys: 1, cl_showstats: 1, cl_night: 0, cl_showknife: 0, cl_righthand: 1, cl_ghost: 0,
   cl_crosshair: 1, cl_crosshaircolor: 0x4cff6a, cl_crosshairsize: 7, cl_crosshairgap: 3, cl_crosshairthickness: 2, cl_crosshairdot: 0,
 };
@@ -1961,7 +1965,7 @@ function applyCrosshair() {
 }
 applyCrosshair();
 
-const H = { speed: $('speed'), timer: $('timer'), sub: $('timerSub'), stats: $('runStats'), statsBox: $('stats'), showpos: $('showpos'), jumpInfo: $('jumpInfo'),
+const H = { speed: $('speed'), timer: $('timer'), sub: $('timerSub'), stats: $('runStats'), statsBox: $('stats'), showpos: $('showpos'), fpsBox: $('fpsBox'), jumpInfo: $('jumpInfo'),
   sk: $('showkeys'), skA: $('skA'), skD: $('skD'), skL: $('skL'), skR: $('skR') };
 function setKeyState(el, s) { if (el._s !== s) { el.className = s; el._s = s; } }
 let lastPBText = '';
@@ -2001,6 +2005,8 @@ function updateHUD() {
     }
     setKeyState(H.skA, sA); setKeyState(H.skD, sD); setKeyState(H.skL, sL); setKeyState(H.skR, sR);
   }
+  H.fpsBox.style.display = cv.cl_showfps && !cv.cl_showpos ? '' : 'none';
+  if (cv.cl_showfps && !cv.cl_showpos) H.fpsBox.textContent = `${fps} fps`;
   H.showpos.style.display = cv.cl_showpos ? '' : 'none';
   if (cv.cl_showpos) {
     // Source coordinates, so it lines up with the original map
@@ -2019,6 +2025,7 @@ function syncMenu() {
   $('o_sens').value = cv.sensitivity; $('o_yaw').value = cv.m_yaw; $('o_pitch').value = cv.m_pitch;
   $('o_xh').checked = !!cv.cl_crosshair; $('x_dot').checked = !!cv.cl_crosshairdot; $('x_color').value = hexColor(cv.cl_crosshaircolor);
   $('x_size').value = cv.cl_crosshairsize; $('x_gap').value = cv.cl_crosshairgap; $('x_thick').value = cv.cl_crosshairthickness; $('o_fov').value = cv.fov; $('o_vol').value = cv.volume;
+  $('o_fps').checked = !!cv.cl_showfps;
   $('o_keys').checked = !!cv.cl_showkeys; $('o_stats').checked = !!cv.cl_showstats; $('o_knife').checked = !!cv.cl_showknife;
   $('g_off').classList.toggle('sel', !cv.cl_ghost); $('g_pb').classList.toggle('sel', cv.cl_ghost === 1); $('g_wr').classList.toggle('sel', cv.cl_ghost === 2);
   $('g_wr').hidden = !LB_ONLINE;
@@ -2036,7 +2043,7 @@ function setCvar(k, v) {
   if (!(k in DEFAULTS) || String(v).trim() === '') { syncMenu(); return false; }
   let n = Number(v); if (!Number.isFinite(n)) { syncMenu(); return false; }
   n = clampCvar(k, n);
-  if (k === 'sv_autobunnyhopping' || k === 'cl_night' || k === 'cl_crosshair' || k === 'cl_crosshairdot' || k === 'cl_smoothcam') n = n ? 1 : 0;
+  if (k === 'sv_autobunnyhopping' || k === 'cl_night' || k === 'cl_crosshair' || k === 'cl_crosshairdot' || k === 'cl_smoothcam' || k === 'cl_showfps') n = n ? 1 : 0;
   if (IS_KZ && k === 'sv_autobunnyhopping') n = 0;
   const changed = cv[k] !== n;
   cv[k] = n;
@@ -2057,6 +2064,7 @@ $('t_day').addEventListener('click', () => setCvar('cl_night', 0));
 $('t_night').addEventListener('click', () => setCvar('cl_night', 1));
 $('o_keys').addEventListener('change', (e) => setCvar('cl_showkeys', e.target.checked ? 1 : 0));
 $('o_stats').addEventListener('change', (e) => setCvar('cl_showstats', e.target.checked ? 1 : 0));
+$('o_fps').addEventListener('change', (e) => setCvar('cl_showfps', e.target.checked ? 1 : 0));
 $('o_xh').addEventListener('change', (e) => setCvar('cl_crosshair', e.target.checked ? 1 : 0));
 $('x_dot').addEventListener('change', (e) => setCvar('cl_crosshairdot', e.target.checked ? 1 : 0));
 $('x_color').addEventListener('input', (e) => setCvar('cl_crosshaircolor', parseInt(e.target.value.slice(1), 16)));
