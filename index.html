@@ -129,6 +129,7 @@
   .group h3 { margin:0 auto 0 0; font-size:10px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:var(--dim); }
   .fields { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
   .fields .span2 { grid-column:span 2; }
+  .fields .span3 { grid-column:1 / -1; }
   .group label { font-size:11px; color:var(--dim); display:flex; flex-direction:column; gap:4px; min-width:0; }
   .group label.chk { flex-direction:row; align-items:center; gap:8px; color:#dfe5ea; font-size:13px; height:22px; }
   .group input[type=number] { width:100%; height:30px; min-width:0; background:#0b0d10; color:#e9edf1; border:0; border-radius:4px; padding:0 7px; font-size:13px; font-family:inherit; }
@@ -243,6 +244,7 @@
           <div class="fields">
             <label>FOV <input id="o_fov" type="number" step="1" min="60" max="130"></label>
             <label class="span2">Volume <span class="range"><input id="o_vol" type="range" min="0" max="1" step="0.05"></span></label>
+            <label class="span3">Camera <span class="seg"><button id="c_smooth">Smooth</button><button id="c_snappy">Snappy</button></span></label>
           </div>
         </section>
         <section class="group">
@@ -330,6 +332,7 @@ if (IS_KZ) Object.assign(PHYS, { sv_airaccelerate: 100, sv_accelerate: 6.5, sv_f
 const DEFAULTS = {
   sv_autobunnyhopping: 1, sensitivity: 1.5, m_yaw: 0.022, m_pitch: 0.022, fov: 90,
   volume: 0.5,
+  cl_smoothcam: 1,
   cl_showpos: 0, cl_showkeys: 1, cl_showstats: 1, cl_night: 0, cl_showknife: 0, cl_righthand: 1, cl_ghost: 0,
   cl_crosshair: 1, cl_crosshaircolor: 0x4cff6a, cl_crosshairsize: 7, cl_crosshairgap: 3, cl_crosshairthickness: 2, cl_crosshairdot: 0,
 };
@@ -2024,6 +2027,7 @@ function syncMenu() {
   wb.disabled = !rp; wb.textContent = rp ? `WATCH BEST RUN · ${fmtTime(rp.time)}` : 'NO REPLAY YET · SET A PB';
   $('m_auto').classList.toggle('sel', !!cv.sv_autobunnyhopping); $('m_scroll').classList.toggle('sel', !cv.sv_autobunnyhopping);
   $('m_auto').hidden = IS_KZ; $('m_auto').disabled = IS_KZ;
+  $('c_smooth').classList.toggle('sel', !!cv.cl_smoothcam); $('c_snappy').classList.toggle('sel', !cv.cl_smoothcam);
   $('t_day').classList.toggle('sel', !cv.cl_night); $('t_night').classList.toggle('sel', !!cv.cl_night);
   const pb = loadPB()[pbKey()];
   $('pbLine').innerHTML = `${cv.sv_autobunnyhopping ? 'Hold space to hop' : 'Time each jump with space or scroll'} · best <b>${pb ? fmtTime(pb) : '—'}</b>`;
@@ -2032,7 +2036,7 @@ function setCvar(k, v) {
   if (!(k in DEFAULTS) || String(v).trim() === '') { syncMenu(); return false; }
   let n = Number(v); if (!Number.isFinite(n)) { syncMenu(); return false; }
   n = clampCvar(k, n);
-  if (k === 'sv_autobunnyhopping' || k === 'cl_night' || k === 'cl_crosshair' || k === 'cl_crosshairdot') n = n ? 1 : 0;
+  if (k === 'sv_autobunnyhopping' || k === 'cl_night' || k === 'cl_crosshair' || k === 'cl_crosshairdot' || k === 'cl_smoothcam') n = n ? 1 : 0;
   if (IS_KZ && k === 'sv_autobunnyhopping') n = 0;
   const changed = cv[k] !== n;
   cv[k] = n;
@@ -2060,6 +2064,7 @@ $('x_size').addEventListener('change', (e) => setCvar('cl_crosshairsize', e.targ
 $('x_gap').addEventListener('change', (e) => setCvar('cl_crosshairgap', e.target.value));
 $('x_thick').addEventListener('change', (e) => setCvar('cl_crosshairthickness', e.target.value));
 for (const [id, v] of [['g_off', 0], ['g_pb', 1], ['g_wr', 2]]) $(id).addEventListener('click', () => setCvar('cl_ghost', v));
+for (const [id, v] of [['c_smooth', 1], ['c_snappy', 0]]) $(id).addEventListener('click', () => setCvar('cl_smoothcam', v));
 $('watch').addEventListener('click', () => startWatching());
 $('o_knife').addEventListener('change', (e) => { setCvar('cl_showknife', e.target.checked ? 1 : 0); if (cv.cl_showknife) vmDraw(); });
 $('o_vol').addEventListener('input', (e) => setCvar('volume', e.target.value));
@@ -2470,7 +2475,7 @@ function frame(now) {
   const tickDt = 1 / TICKRATE;
   if (playing) { acc += dt; let n = 0; while (acc >= tickDt && n++ < 64) { tick(tickDt); recordTick(); acc -= tickDt; } } else acc = 0;
   if (watching) updateReplayView(dt);
-  const alpha = playing ? Math.min(1, acc / tickDt) : 1;
+  const alpha = playing && cv.cl_smoothcam ? Math.min(1, acc / tickDt) : 1;
 
   eye.lerpVectors(prevPos, pos, alpha);
   eye.y += prevViewOff + (viewOff - prevViewOff) * alpha;
